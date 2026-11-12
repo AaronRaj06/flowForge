@@ -1,0 +1,133 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+
+}
+
+model User {
+  id           String             @id @default(uuid())
+  email        String             @unique
+  passwordHash String
+  pipelines    Pipeline[]
+  runs         Run[]
+  tokens       IntegrationToken[]
+  templates    Template[]
+  deployments  Deployment[]
+  chunks       KnowledgeChunk[]
+  createdAt    DateTime           @default(now())
+}
+
+model Pipeline {
+  id          String       @id @default(uuid())
+  userId      String
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  graph       Json // { nodes: [], edges: [] }
+  runs        Run[]
+  deployments Deployment[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+model Run {
+  id           String      @id @default(uuid())
+  // null for ad-hoc runs of an unsaved canvas
+  pipelineId   String?
+  pipeline     Pipeline?   @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  deploymentId String?
+  deployment   Deployment? @relation(fields: [deploymentId], references: [id], onDelete: SetNull)
+  userId       String
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status       RunStatus   @default(PENDING)
+  graph        Json // snapshot of the graph that was executed
+  input        Json?
+  output       Json?
+  error        String?
+  tokensUsed   Int         @default(0)
+  events       RunEvent[]
+  startedAt    DateTime    @default(now())
+  finishedAt   DateTime?
+
+  @@index([userId, startedAt])
+  @@index([deploymentId, startedAt])
+}
+
+model RunEvent {
+  id        String    @id @default(uuid())
+  runId     String
+  run       Run       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  nodeId    String
+  status    String // pending | running | success | error | skipped | auth_error
+  output    Json?
+  error     String?
+  startedAt DateTime?
+  endedAt   DateTime?
+
+  @@unique([runId, nodeId])
+}
+
+model IntegrationToken {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider     String // gmail | slack | sheets
+  accessToken  String
+  refreshToken String?
+  expiresAt    DateTime?
+
+  @@unique([userId, provider])
+}
+
+model Template {
+  id          String   @id @default(uuid())
+  authorId    String
+  author      User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  category    String
+  graph       Json
+  variables   Json // [{ key, description, defaultValue }]
+  public      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+}
+
+model Deployment {
+  id             String    @id @default(uuid())
+  pipelineId     String
+  pipeline       Pipeline  @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type           String // cron | webhook | api
+  cronExpression String?
+  webhookSecret  String?
+  syncTimeout    Int       @default(30)
+  active         Boolean   @default(true)
+  lastRunAt      DateTime?
+  runs           Run[]
+  createdAt      DateTime  @default(now())
+}
+
+model KnowledgeChunk {
+  id         String                       @id @default(uuid())
+  userId     String
+  user       User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceFile String
+  chunkText  String
+  embedding  Unsupported("vector(1536)")?
+  createdAt  DateTime                     @default(now())
+
+  @@map("knowledge_chunks")
+}
+
+enum RunStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  ERROR
+  CANCELLED
+}

@@ -1,0 +1,45 @@
+# Dev stack: Postgres (pgvector), Redis, API, queue worker, web.
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: flowforge
+      POSTGRES_PASSWORD: flowforge
+      POSTGRES_DB: flowforge
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowforge"]
+      interval: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  api: &server
+    build: { context: ., dockerfile: server/Dockerfile }
+    env_file: server/.env
+    environment:
+      DATABASE_URL: postgresql://flowforge:flowforge@postgres:5432/flowforge
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+    command: sh -c "npm run db:setup && npx tsx src/api/index.ts"
+    ports: ["4000:4000"]
+
+  worker:
+    <<: *server
+    command: npx tsx src/worker.ts
+    ports: []
+
+  web:
+    build: { context: ., dockerfile: web/Dockerfile }
+    environment:
+      VITE_API_PROXY: http://api:4000
+    depends_on: [api]
+    ports: ["5173:5173"]
+
+volumes:
+  pgdata:
