@@ -26,7 +26,7 @@ runsRouter.post('/', async (req, res) => {
 // Run a saved pipeline by id: POST /api/runs/:pipelineId (the lifecycle diagram's route).
 // /pipeline/:pipelineId is kept as an alias for existing callers.
 runsRouter.post(['/:pipelineId', '/pipeline/:pipelineId'], async (req, res) => {
-  const p = await ownPipeline(req.params.pipelineId, req.userId);
+  const p = await ownPipeline(String(req.params.pipelineId), req.userId);
   const run = await createRun({ userId: req.userId, graph: parseGraph(p.graph), input: req.body?.input, pipelineId: p.id });
   res.status(202).json({ runId: run.id });
 });
