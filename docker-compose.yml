@@ -6,7 +6,6 @@ services:
       POSTGRES_USER: flowforge
       POSTGRES_PASSWORD: flowforge
       POSTGRES_DB: flowforge
-    ports: ["5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U flowforge"]
@@ -15,7 +14,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
 
   api: &server
     build: { context: ., dockerfile: server/Dockerfile }
@@ -33,6 +31,7 @@ services:
     <<: *server
     command: npx tsx src/worker.ts
     ports: []
+    restart: on-failure # retries until the api's db:setup has created the tables
 
   web:
     build: { context: ., dockerfile: web/Dockerfile }

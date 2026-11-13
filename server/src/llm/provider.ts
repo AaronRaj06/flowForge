@@ -11,7 +11,7 @@ export type CompletionRequest = {
 };
 export type Completion = { text: string; inputTokens: number; outputTokens: number };
 
-export const DEFAULT_MODELS = { anthropic: 'claude-opus-5-5', openai: 'gpt-4o-mini', mock: 'mock' } as const;
+export const DEFAULT_MODELS = { anthropic: 'claude-opus-5-5', openai: process.env.OPENAI_MODEL || 'gpt-4o-mini', mock: 'mock' } as const;
 
 let anthropic: Anthropic | undefined;
 let openai: OpenAI | undefined;
@@ -77,7 +77,11 @@ export const EMBEDDING_DIM = 1536;
 export async function embed(texts: string[]): Promise<number[][]> {
   if (process.env.OPENAI_API_KEY) {
     openai ??= new OpenAI();
-    const res = await openai.embeddings.create({ model: 'text-embedding-3-small', input: texts });
+    const res = await openai.embeddings.create({
+      model: process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small',
+      input: texts,
+      dimensions: EMBEDDING_DIM, // must match the vector(1536) column, whatever the provider's native size
+    });
     return res.data.map((d) => d.embedding);
   }
   return texts.map(mockEmbedding);
