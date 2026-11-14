@@ -5,6 +5,12 @@ import type { Graph } from '../engine/types.ts';
 
 export const dailyBudget = () => Number(process.env.DAILY_TOKEN_BUDGET ?? 50_000);
 
+/** Optional blended USD price per million tokens; null hides money amounts (prices vary by model). */
+export const costPerMillion = () => {
+  const v = Number(process.env.TOKEN_COST_PER_MILLION);
+  return Number.isFinite(v) && v > 0 ? v : null;
+};
+
 export async function tokensUsedToday(userId: string) {
   const since = new Date();
   since.setHours(0, 0, 0, 0);

@@ -6,15 +6,22 @@ import { topoSort } from '../src/engine/dag.ts';
 import { runPipeline } from '../src/engine/runner.ts';
 import { AuthError, NodeExecutionError } from '../src/engine/errors.ts';
 import { prisma, redis } from '../src/db.ts';
+import { runQueue, queueConnection } from '../src/queue.ts';
 import { saveToken, getValidToken } from '../src/integrations/tokens.ts';
-import { decrypt } from '../src/lib/crypto.ts';
+import { decrypt, encrypt } from '../src/lib/crypto.ts';
 import { chunkText, ingest, search } from '../src/kb/knowledge.ts';
 import { toRows } from '../src/integrations/sheets/actions.ts';
 import type { Graph, RunEventPayload } from '../src/engine/types.ts';
+import { generatePipeline, suggestFix, parseJsonReply } from '../src/ai/assist.ts';
+import type { CompletionRequest } from '../src/llm/provider.ts';
+import { runsPerMonth } from '../src/api/pipelines.ts';
+import { runAgent } from '../src/engine/nodes/agent.ts';
 
 after(async () => {
   await prisma.user.deleteMany({ where: { email: { startsWith: 'test-' } } });
   await prisma.$disconnect();
+  await runQueue.close(); // the AI assist module pulls in the queue via runs/create
+  queueConnection.disconnect();
   redis.disconnect();
 });
 
@@ -201,4 +208,109 @@ test('KB ingest + KB Query node retrieves the relevant chunk', async () => {
   );
   assert.ok(context.kbQuery.output.startsWith('Cats are independent'));
   assert.match(context.l.output, /Context: Cats are independent/);
+});
+
+// ---------- AI assist ----------
+
+test('Build with AI repairs one bad reply, validates, lays out, and bills tokens', async () => {
+  const user = await prisma.user.create({ data: { email: `test-ai-${Date.now()}@x.dev`, passwordHash: 'x' } });
+  const prompts: string[] = [];
+  const replies = [
+    'Sure! {"nodes":[{"id":"a","type":"nope","config":{}}],"edges":[]}',
+    '```json\n{"nodes":[{"id":"fetch","type":"http","config":{"url":"https://example.com"}},{"id":"sum","type":"llm","config":{"prompt":"Summarize {{fetch.output}}"}}],"edges":[{"source":"fetch","target":"sum"}]}\n```',
+  ];
+  const fake = async (req: CompletionRequest) => (prompts.push(req.prompt), { text: replies.shift()!, inputTokens: 10, outputTokens: 5 });
+  const g = await generatePipeline(user.id, 'summarize a web page', fake);
+  assert.deepEqual(g.nodes.map((n) => [n.name, n.position!.x]), [['fetch', 80], ['sum', 380]]);
+  assert.deepEqual(g.edges.map((e) => [e.source, e.target]), [[g.nodes[0].id, g.nodes[1].id]]);
+  assert.match(g.nodes[0].id, /^[0-9a-f-]{36}$/);
+  assert.match(prompts[1], /Unknown node type "nope"/);
+  const billed = await prisma.run.aggregate({ where: { userId: user.id }, _sum: { tokensUsed: true } });
+  assert.equal(billed._sum.tokensUsed, 30);
+  await assert.rejects(generatePipeline(user.id, 'x', async () => ({ text: 'no json', inputTokens: 0, outputTokens: 0 })), /couldn’t produce a valid pipeline/);
+});
+
+test('Fix with AI never shows secrets to the model and keeps them on apply', async () => {
+  const user = await prisma.user.create({ data: { email: `test-fix-${Date.now()}@x.dev`, passwordHash: 'x' } });
+  let seen = '';
+  const fake = async (req: CompletionRequest) => ((seen = req.prompt), { text: '{"explanation":"Use https.","config":{"url":"https://api.example.com"}}', inputTokens: 1, outputTokens: 1 });
+  const node = { type: 'http', name: 'call', config: { url: 'htp://api.example.com', apiKey: 'sk-secret-123', headers: '{"Authorization":"Bearer abc"}' } };
+  const fix = await suggestFix(user.id, node, 'Invalid URL', fake);
+  assert.ok(!seen.includes('sk-secret-123') && !seen.includes('Bearer abc'), seen);
+  assert.equal(fix.config.url, 'https://api.example.com');
+  assert.equal(fix.config.apiKey, 'sk-secret-123');
+  assert.deepEqual(fix.changes, { url: 'https://api.example.com' });
+  assert.deepEqual(parseJsonReply('x {"a":{"b":1}} y'), { a: { b: 1 } });
+});
+
+test('runsPerMonth projects schedules over 30 days', () => {
+  assert.equal(runsPerMonth('0 9 1 * *') >= 1 && runsPerMonth('0 9 1 * *') <= 2, true);
+  const daily = runsPerMonth('0 9 * * *');
+  assert.ok(daily >= 29 && daily <= 31, String(daily));
+  assert.equal(runsPerMonth('* * * * *', 500), 500);
+});
+
+test('agent can run one of the user’s pipelines as a tool, but not someone else’s', async () => {
+  const user = await testUser();
+  const other = await testUser();
+  const double = { nodes: [{ id: 'd', name: 'doubled', type: 'transform', config: { expression: 'input.input.n * 2' } }], edges: [] };
+  const mine = await prisma.pipeline.create({ data: { userId: user.id, name: 'Double It', graph: double } });
+  const theirs = await prisma.pipeline.create({ data: { userId: other.id, name: 'Secret', graph: double } });
+  const replies = ['{"tool":"pipeline_secret","args":{"input":{"n":1}}}', '{"tool":"pipeline_double_it","args":{"input":{"n":21}}}', '{"answer":"done"}'];
+  const fake = async () => ({ text: replies.shift()!, inputTokens: 1, outputTokens: 1 });
+  const out = await runAgent({ prompt: 'double 21', tools: [`pipeline:${mine.id}`, `pipeline:${theirs.id}`] }, { nodeId: 'a', context: {}, inputs: {}, userId: user.id, depth: 0, addTokens: () => {} }, fake);
+  assert.equal(out.steps[0].error, 'No tool called pipeline_secret');
+  assert.equal(out.steps[1].result, '{"doubled":42}');
+});
+
+test('key-based blocks call the right API with the stored secret, and refuse other users’ credentials', async () => {
+  const user = await testUser();
+  const other = await testUser();
+  const mk = (userId: string, type: string, secret: string) => prisma.credential.create({ data: { userId, name: `${type}-${Math.random()}`, type, secret: encrypt(secret) } });
+  const creds = {
+    discord: await mk(user.id, 'discord', 'https://discord.com/api/webhooks/1/abc'),
+    telegram: await mk(user.id, 'telegram', '123:tok'),
+    notion: await mk(user.id, 'notion', 'secret_n'),
+    github: await mk(user.id, 'github', 'ghp_g'),
+    airtable: await mk(user.id, 'airtable', 'pat.a'),
+  };
+  const theirs = await mk(other.id, 'github', 'ghp_theirs');
+  const calls: { url: string; auth?: string; body: any }[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: any) => {
+    calls.push({ url: String(url), auth: init.headers.authorization, body: JSON.parse(init.body) });
+    const status = String(url).includes('/denied/') ? 401 : 200;
+    return new Response(JSON.stringify({ id: 'p1', url: 'u', number: 7, html_url: 'h', records: [{ id: 'r1' }], result: { message_id: 9 } }), { status });
+  }) as typeof fetch;
+  try {
+    const g: Graph = {
+      nodes: [
+        { id: 'd', type: 'discord', config: { credential: creds.discord.id, content: 'hi {{input}}' } },
+        { id: 't', type: 'telegram', config: { credential: creds.telegram.id, chatId: '42', text: 'hi' } },
+        { id: 'n', type: 'notion', config: { credential: creds.notion.id, databaseId: 'db-1', title: 'T', content: 'C' } },
+        { id: 'g', type: 'github', config: { credential: creds.github.id, repo: 'o/r', title: 'Bug' } },
+        { id: 'a', type: 'airtable', config: { credential: creds.airtable.id, baseId: 'app1', table: 'Leads', fields: '{"Name": "{{input}}"}' } },
+      ],
+      edges: [],
+    };
+    const { context } = await runPipeline(g, 'Ada', { userId: user.id });
+    assert.deepEqual(calls.map((c) => c.url), [
+      'https://discord.com/api/webhooks/1/abc?wait=true',
+      'https://api.telegram.org/bot123:tok/sendMessage',
+      'https://api.notion.com/v1/pages',
+      'https://api.github.com/repos/o/r/issues',
+      'https://api.airtable.com/v0/app1/Leads',
+    ]);
+    assert.equal(calls[0].body.content, 'hi Ada');
+    assert.equal(calls[2].auth, 'Bearer secret_n');
+    assert.equal(calls[2].body.parent.database_id, 'db1');
+    assert.deepEqual(calls[4].body.records[0].fields, { Name: 'Ada' });
+    assert.deepEqual([context.g.output, context.a.output, context.t.output], [{ number: 7, url: 'h' }, { recordId: 'r1' }, { messageId: 9 }]);
+
+    await assert.rejects(runPipeline({ nodes: [{ id: 'x', type: 'github', config: { credential: theirs.id, repo: 'o/r', title: 't' } }], edges: [] }, null, { userId: user.id }), /credential not found/);
+    await assert.rejects(runPipeline({ nodes: [{ id: 'x', type: 'github', config: { credential: creds.notion.id, repo: 'o/r', title: 't' } }], edges: [] }, null, { userId: user.id }), /credential not found/);
+    await assert.rejects(runPipeline({ nodes: [{ id: 'x', type: 'github', config: { credential: creds.github.id, repo: 'o/denied', title: 't' } }], edges: [] }, null, { userId: user.id }), /rejected the credential \(HTTP 401\)/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

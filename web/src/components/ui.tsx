@@ -93,7 +93,7 @@ export function CopyField({ value, mono = true }: { value: string; mono?: boolea
 export const StatusDot = ({ status }: { status: string }) => {
   const s = status.toLowerCase();
   const color =
-    s === 'success' ? 'bg-st-success' : s === 'error' || s === 'auth_error' ? 'bg-st-error' : s === 'running' ? 'bg-st-running' : 'bg-st-pending';
+    s === 'success' ? 'bg-st-success' : s === 'error' || s === 'auth_error' ? 'bg-st-error' : s === 'running' ? 'bg-st-running' : s === 'waiting' ? 'bg-st-waiting' : 'bg-st-pending';
   return <span className={cx('inline-block size-2 shrink-0 rounded-full', color)} aria-hidden />;
 };
 

@@ -17,13 +17,15 @@ export type EdgeDef = {
 
 export type Graph = { nodes: NodeDef[]; edges: EdgeDef[] };
 
-export type NodeStatus = 'pending' | 'running' | 'success' | 'error' | 'skipped' | 'auth_error';
+export type NodeStatus = 'pending' | 'running' | 'success' | 'error' | 'skipped' | 'auth_error' | 'waiting';
 
 export type RunEventPayload = {
   nodeId: string;
   status: NodeStatus;
   output?: unknown;
   error?: string;
+  /** LLM tokens this block used (summed over loop iterations). */
+  tokens?: number;
   startedAt?: Date;
   endedAt?: Date;
 };
@@ -33,8 +35,12 @@ export type Context = Record<string, any>;
 export type NodeContext = {
   nodeId: string;
   context: Context;
+  /** Outputs of the live upstream blocks, keyed by name (or id). */
+  inputs: Record<string, unknown>;
   userId?: string;
   signal?: AbortSignal;
+  /** How many pipelines deep this block runs (an agent calling a pipeline adds one). */
+  depth: number;
   addTokens: (n: number) => void;
 };
 

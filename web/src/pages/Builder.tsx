@@ -47,6 +47,7 @@ export function Builder() {
   useRunStream((status, error) => {
     if (status === 'SUCCESS') toast.success('Run finished');
     else if (status === 'CANCELLED') toast('Run cancelled');
+    else if (status === 'WAITING') toast('Waiting for approval: approve or reject it in the Run tab');
     else toast.error(error ?? 'Run failed');
   });
 

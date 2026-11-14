@@ -1,12 +1,58 @@
-import { useState } from 'react';
-import { Trash2, PlugZap, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Trash2, PlugZap, CheckCircle2, AlertTriangle, Sparkles } from 'lucide-react';
+import { toast } from 'sonner';
+import { api, errorMessage } from '../lib/api';
 import { useReactFlow } from '@xyflow/react';
+import { Link } from 'react-router-dom';
 import { usePipeline } from '../store/pipelineStore';
 import { META, type Field } from '../lib/nodeTypes';
 import { useIntegrations } from '../hooks/useIntegrations';
 import { Button, Input, Label, Select, Textarea } from './ui';
 
 const PROVIDER_LABEL: Record<string, string> = { gmail: 'Gmail', slack: 'Slack', sheets: 'Google Sheets' };
+
+/** Checkbox list for an agent's tools: built-ins plus the user's saved pipelines. Stored as ['http', 'kb', 'pipeline:<id>']. */
+function ToolsInput({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+  const [pipelines, setPipelines] = useState<{ id: string; name: string }[]>([]);
+  const ownId = usePipeline((s) => s.pipelineId);
+  useEffect(() => {
+    api<{ pipelines: { id: string; name: string }[] }>('/api/pipelines').then((r) => setPipelines(r.pipelines)).catch(() => {});
+  }, []);
+  const options = [
+    { value: 'http', label: 'Web requests (HTTP)' },
+    { value: 'kb', label: 'Search my knowledge base' },
+    ...pipelines.filter((p) => p.id !== ownId).map((p) => ({ value: `pipeline:${p.id}`, label: `Run pipeline “${p.name}”` })),
+  ];
+  return (
+    <div className="space-y-1.5">
+      {options.map((o) => (
+        <label key={o.value} className="flex items-center gap-2 text-[13px]">
+          <input type="checkbox" checked={value.includes(o.value)} onChange={(e) => onChange(e.target.checked ? [...value, o.value] : value.filter((v) => v !== o.value))} />
+          {o.label}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+/** Picks one of the user's saved credentials of a type; secrets never reach the browser. */
+function CredentialInput({ id, type, value, onChange }: { id: string; type: string; value: string; onChange: (v: string) => void }) {
+  const [creds, setCreds] = useState<{ id: string; name: string; type: string }[] | null>(null);
+  useEffect(() => {
+    api<{ credentials: { id: string; name: string; type: string }[] }>('/api/credentials').then((r) => setCreds(r.credentials.filter((c) => c.type === type))).catch(() => setCreds([]));
+  }, [type]);
+  if (creds && !creds.length) {
+    return <p className="text-[12px] text-muted">No saved credential yet. <Link to="/credentials" className="font-medium text-ink underline">Add one on the Credentials page</Link>.</p>;
+  }
+  return (
+    <Select id={id} value={value ?? ''} onChange={(e) => onChange(e.target.value)}>
+      <option value="">Choose…</option>
+      {(creds ?? []).map((c) => (
+        <option key={c.id} value={c.id}>{c.name}</option>
+      ))}
+    </Select>
+  );
+}
 
 function FieldInput({ field, value, onChange }: { field: Field; value: any; onChange: (v: any) => void }) {
   const id = `f-${field.key}`;
@@ -16,7 +62,11 @@ function FieldInput({ field, value, onChange }: { field: Field; value: any; onCh
       <Label htmlFor={id} hint={field.hint}>
         {field.label}
       </Label>
-      {field.kind === 'select' ? (
+      {field.kind === 'credential' ? (
+        <CredentialInput id={id} type={field.credentialType!} value={value} onChange={onChange} />
+      ) : field.kind === 'tools' ? (
+        <ToolsInput value={Array.isArray(value) ? value : []} onChange={onChange} />
+      ) : field.kind === 'select' ? (
         <Select id={id} value={value ?? ''} onChange={(e) => onChange(e.target.value)}>
           {field.options!.map((o) => (
             <option key={o.value} value={o.value}>
@@ -86,6 +136,52 @@ function IntegrationBanner({ provider, needsReconnect }: { provider: string; nee
   );
 }
 
+type Fix = { explanation: string; changes: Record<string, unknown> };
+
+/** Asks the AI why a block failed and offers its config change as a one-click Apply. */
+function FixWithAI({ type, name, config, error, onApply }: { type: string; name: string; config: Record<string, any>; error: string; onApply: (c: Record<string, unknown>) => void }) {
+  const [fix, setFix] = useState<Fix | null>(null);
+  const [busy, setBusy] = useState(false);
+  const ask = async () => {
+    setBusy(true);
+    try {
+      setFix(await api<Fix>('/api/ai/fix', { method: 'POST', json: { node: { type, name, config }, error } }));
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!fix) {
+    return (
+      <Button onClick={ask} loading={busy} className="w-full">
+        <Sparkles size={14} /> Fix with AI
+      </Button>
+    );
+  }
+  const keys = Object.keys(fix.changes);
+  return (
+    <div className="space-y-2 rounded-md border border-line p-3">
+      <p className="text-[13px]">{fix.explanation || 'No explanation given.'}</p>
+      {keys.length > 0 && (
+        <pre className="max-h-40 overflow-auto rounded bg-sunken p-2 font-mono text-[11.5px] whitespace-pre-wrap break-words">
+          {keys.map((k) => `${k}: ${typeof fix.changes[k] === 'string' ? fix.changes[k] : JSON.stringify(fix.changes[k])}`).join('\n')}
+        </pre>
+      )}
+      <div className="flex gap-2">
+        {keys.length > 0 && (
+          <Button size="sm" variant="primary" onClick={() => (onApply(fix.changes), setFix(null), toast.success('Fix applied. Run again to check it.'))}>
+            Apply
+          </Button>
+        )}
+        <Button size="sm" variant="ghost" onClick={() => setFix(null)}>
+          Dismiss
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function ConfigPanel() {
   const node = usePipeline((s) => s.nodes.find((n) => n.id === s.selectedId));
   const { updateNodeConfig, renameNode } = usePipeline();
@@ -126,12 +222,37 @@ export function ConfigPanel() {
         <FieldInput key={f.key} field={f} value={node.data.config[f.key]} onChange={(v) => updateNodeConfig(node.id, { [f.key]: v })} />
       ))}
 
+      {!meta.trigger && (
+        <details className="rounded-md border border-line p-3" open={Boolean(node.data.config.retries || node.data.config.continueOnFail)}>
+          <summary className="cursor-pointer text-[13px] font-medium">On error</summary>
+          <div className="mt-3 space-y-3">
+            <FieldInput
+              field={{ key: 'retries', label: 'Retries', kind: 'number', hint: 'Try again up to 5 times, waiting 1s, 2s, 4s… between attempts. Careful with blocks that send messages.' }}
+              value={node.data.config.retries ?? 0}
+              onChange={(v) => updateNodeConfig(node.id, { retries: Math.min(Math.max(Number(v) || 0, 0), 5) })}
+            />
+            <label className="flex items-start gap-2 text-[13px]">
+              <input type="checkbox" className="mt-0.5" checked={Boolean(node.data.config.continueOnFail)} onChange={(e) => updateNodeConfig(node.id, { continueOnFail: e.target.checked })} />
+              <span>
+                Continue on fail
+                <span className="block text-[12px] text-muted">The run keeps going; later blocks can check <code className="font-mono">{`{{${node.data.name}.error}}`}</code>.</span>
+              </span>
+            </label>
+          </div>
+        </details>
+      )}
+
       {(node.data.output !== undefined || node.data.error) && (
         <div>
           <Label>{node.data.error ? 'Error' : 'Last output'}</Label>
           <pre className={`max-h-64 overflow-auto rounded-md bg-sunken p-2.5 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap break-words ${node.data.error ? 'text-st-error' : ''}`}>
             {node.data.error ?? (typeof node.data.output === 'string' ? node.data.output : JSON.stringify(node.data.output, null, 2))}
           </pre>
+          {node.data.error && node.data.status !== 'auth_error' && (
+            <div className="mt-2">
+              <FixWithAI type={node.type!} name={node.data.name} config={node.data.config} error={node.data.error} onApply={(c) => updateNodeConfig(node.id, c)} />
+            </div>
+          )}
         </div>
       )}
     </div>

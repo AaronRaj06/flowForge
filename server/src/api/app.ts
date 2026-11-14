@@ -8,6 +8,9 @@ import { integrationsRouter } from './integrations.ts';
 import { templatesRouter } from './templates.ts';
 import { kbRouter } from './kb.ts';
 import { deploymentsRouter, publicRouter } from './deployments.ts';
+import { aiRouter } from './ai.ts';
+import { approvalsRouter } from './approvals.ts';
+import { credentialsRouter } from './credentials.ts';
 
 export function createApp() {
   const app = express();
@@ -26,6 +29,9 @@ export function createApp() {
   app.use('/api/templates', requireAuth(), templatesRouter);
   app.use('/api/kb', requireAuth(), kbRouter);
   app.use('/api/deployments', requireAuth(), deploymentsRouter);
+  app.use('/api/ai', requireAuth(), aiRouter);
+  app.use('/api/credentials', requireAuth(), credentialsRouter);
+  app.use(approvalsRouter); // /approvals/:runId/:token
   app.use(publicRouter); // /webhooks/:id and /api/:id/invoke
 
   app.use((_req, res) => void res.status(404).json({ error: 'Not found' }));

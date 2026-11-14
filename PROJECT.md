@@ -206,6 +206,8 @@ npm run smoke                     # end-to-end against a running stack (expects 
 | 5 | Five new integrations, two new triggers | Wider practical use |
 | 6 | Hardening, then teams and production | Ready for real multi-user use |
 
+**Progress (14 Nov 2026):** Steps 1 to 5 are built and tested. Step 4 added the Approval block (a run pauses, then resumes from the Run tab or from an emailed/Slack link) and the AI Agent block (tools: HTTP, knowledge base, other pipelines). Step 5 added a Credentials page plus Discord, Telegram, Notion, GitHub and Airtable blocks, and a public Form trigger that can take a file upload. From Step 6, these are done: the HTTP block pins the resolved IP when it connects, LLM calls retry on 429/5xx with an optional `LLM_FALLBACK_MODEL`, and the smoke tests pass on a real provider. Still to do: `isolated-vm` sandboxing, exact token counting for chunks, and Part D (teams, audit logs, cloud deployment).
+
 ## 12. Repository Layout
 
 ```

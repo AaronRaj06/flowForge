@@ -1,20 +1,21 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Play, Save, Rocket, LayoutTemplate, Plus, Square } from 'lucide-react';
+import { Play, Save, Rocket, LayoutTemplate, Plus, Square, Sparkles } from 'lucide-react';
 import { api, errorMessage } from '../lib/api';
 import { usePipeline } from '../store/pipelineStore';
 import { parseRunInput, useRunInput } from './RunPanel';
 import { Button } from './ui';
 import { SaveTemplateModal } from './SaveTemplateModal';
 import { DeployModal } from './DeployModal';
+import { AiBuildModal } from './AiBuildModal';
 
 export function Toolbar({ onRunStarted }: { onRunStarted: () => void }) {
   const { name, setName, dirty, pipelineId, run, getPipelineJSON, markSaved, startRun, nodes } = usePipeline();
   const navigate = useNavigate();
   const [saving, setSaving] = useState(false);
   const [starting, setStarting] = useState(false);
-  const [modal, setModal] = useState<'template' | 'deploy' | null>(null);
+  const [modal, setModal] = useState<'template' | 'deploy' | 'ai' | null>(null);
 
   const save = async () => {
     setSaving(true);
@@ -66,6 +67,9 @@ export function Toolbar({ onRunStarted }: { onRunStarted: () => void }) {
       <Button variant="ghost" onClick={() => navigate('/')} title="New pipeline">
         <Plus size={14} /> New
       </Button>
+      <Button onClick={() => setModal('ai')} title="Describe a pipeline in plain English">
+        <Sparkles size={14} /> Build with AI
+      </Button>
       <Button onClick={save} loading={saving}>
         <Save size={14} /> Save
       </Button>
@@ -94,6 +98,7 @@ export function Toolbar({ onRunStarted }: { onRunStarted: () => void }) {
         </Button>
       )}
 
+      <AiBuildModal open={modal === 'ai'} onOpenChange={(o) => setModal(o ? 'ai' : null)} />
       <SaveTemplateModal open={modal === 'template'} onOpenChange={(o) => setModal(o ? 'template' : null)} />
       {pipelineId && <DeployModal open={modal === 'deploy'} onOpenChange={(o) => setModal(o ? 'deploy' : null)} pipelineId={pipelineId} />}
     </div>

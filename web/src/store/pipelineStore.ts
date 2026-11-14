@@ -12,7 +12,7 @@ import {
 } from '@xyflow/react';
 import { META } from '../lib/nodeTypes';
 
-export type NodeStatus = 'idle' | 'pending' | 'running' | 'success' | 'error' | 'skipped' | 'auth_error';
+export type NodeStatus = 'idle' | 'pending' | 'running' | 'success' | 'error' | 'skipped' | 'auth_error' | 'waiting';
 
 export type NodeData = {
   name: string;
@@ -20,6 +20,8 @@ export type NodeData = {
   status: NodeStatus;
   output?: unknown;
   error?: string;
+  /** LLM tokens used in the last run. */
+  tokens?: number;
 };
 
 export type PipelineNode = Node<NodeData>;
@@ -29,7 +31,7 @@ export type PipelineJSON = {
   edges: { id: string; source: string; target: string; sourceHandle: string | null }[];
 };
 
-type RunState = { runId: string | null; status: 'idle' | 'running' | 'SUCCESS' | 'ERROR' | 'CANCELLED'; error?: string; output?: unknown };
+type RunState = { runId: string | null; status: 'idle' | 'running' | 'SUCCESS' | 'ERROR' | 'CANCELLED' | 'WAITING'; error?: string; output?: unknown; waiting?: { nodeId: string; request: string } };
 
 type State = {
   pipelineId: string | null;
@@ -51,9 +53,11 @@ type State = {
   getPipelineJSON: () => PipelineJSON;
   load: (p: { id: string | null; name: string; graph: Partial<PipelineJSON> }) => void;
   markSaved: (id: string) => void;
-  setNodeStatus: (id: string, patch: Partial<Pick<NodeData, 'status' | 'output' | 'error'>>) => void;
+  setNodeStatus: (id: string, patch: Partial<Pick<NodeData, 'status' | 'output' | 'error' | 'tokens'>>) => void;
   startRun: (runId: string) => void;
   finishRun: (r: Omit<RunState, 'runId'>) => void;
+  /** After an approval decision: stream again, keeping the statuses already shown. */
+  resumeRun: () => void;
 };
 
 function uniqueName(prefix: string, nodes: PipelineNode[]) {
@@ -64,7 +68,7 @@ function uniqueName(prefix: string, nodes: PipelineNode[]) {
 }
 
 const clearStatus = (nodes: PipelineNode[]) =>
-  nodes.map((n) => ({ ...n, data: { ...n.data, status: 'idle' as const, output: undefined, error: undefined } }));
+  nodes.map((n) => ({ ...n, data: { ...n.data, status: 'idle' as const, output: undefined, error: undefined, tokens: undefined } }));
 
 export const usePipeline = create<State>((set, get) => ({
   pipelineId: null,
@@ -143,4 +147,5 @@ export const usePipeline = create<State>((set, get) => ({
     set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n)) })),
   startRun: (runId) => set((s) => ({ run: { runId, status: 'running' }, nodes: clearStatus(s.nodes) })),
   finishRun: (r) => set((s) => ({ run: { ...r, runId: s.run.runId } })),
+  resumeRun: () => set((s) => ({ run: { runId: s.run.runId, status: 'running' } })),
 }));

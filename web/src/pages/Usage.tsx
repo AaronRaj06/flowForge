@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 
-type Usage = { today: number; budget: number; days: { day: string; tokens: number; runs: number }[] };
+type Usage = { today: number; budget: number; costPerMillion: number | null; days: { day: string; tokens: number; runs: number }[] };
 
 export function UsagePage() {
   const [u, setU] = useState<Usage | null>(null);
@@ -33,6 +33,7 @@ export function UsagePage() {
           <div className="mt-1 text-[24px] font-semibold tabular-nums">
             {u.today.toLocaleString()} <span className="text-[14px] font-normal text-faint">/ {u.budget.toLocaleString()} tokens</span>
           </div>
+          {u.costPerMillion && <div className="mt-0.5 text-[12px] text-muted">About ${((u.today / 1e6) * u.costPerMillion).toFixed(4)} today</div>}
           <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-sunken" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
             <div className={`h-full rounded-full ${pct >= 90 ? 'bg-st-error' : 'bg-ink'}`} style={{ width: `${pct}%` }} />
           </div>

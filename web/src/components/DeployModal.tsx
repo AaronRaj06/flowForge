@@ -3,11 +3,14 @@ import * as Tabs from '@radix-ui/react-tabs';
 import cronstrue from 'cronstrue';
 import { toast } from 'sonner';
 import { api, errorMessage } from '../lib/api';
-import { Button, CopyField, Input, Label, Modal, StatusDot, cx } from './ui';
+import { usePipeline } from '../store/pipelineStore';
+import { Button, CopyField, Input, Label, Modal, Select, StatusDot, cx } from './ui';
 
 type Deployment = {
   id: string;
-  type: 'cron' | 'webhook' | 'api';
+  type: 'cron' | 'webhook' | 'api' | 'form';
+  formFields?: string[];
+  formFile?: boolean;
   cronExpression: string | null;
   webhookSecret?: string | null;
   syncTimeout: number;
@@ -63,7 +66,7 @@ function DeploymentCard({ d, onChange }: { d: Deployment; onChange: () => void }
     onChange();
   };
   const curl =
-    d.type === 'cron'
+    d.type === 'cron' || d.type === 'form'
       ? null
       : `curl -X POST '${d.url}' \\\n  -H 'Content-Type: application/json' \\\n  -H 'X-Webhook-Secret: ${d.webhookSecret}' \\\n  -d '{"text": "hello"}'`;
 
@@ -72,7 +75,7 @@ function DeploymentCard({ d, onChange }: { d: Deployment; onChange: () => void }
       <div className="flex items-center gap-2">
         <span className={cx('size-2 rounded-full', d.active ? 'bg-st-success' : 'bg-st-pending')} />
         <span className="flex-1 text-[13px] font-medium">
-          {d.type === 'cron' ? describeCron(d.cronExpression!).text : d.type === 'webhook' ? 'Webhook (async)' : `REST API (sync, ${d.syncTimeout}s timeout)`}
+          {d.type === 'cron' ? describeCron(d.cronExpression!).text : d.type === 'form' ? `Form: ${d.formFields?.join(', ')}${d.formFile ? ' + file' : ''}` : d.type === 'webhook' ? 'Webhook (async)' : `REST API (sync, ${d.syncTimeout}s timeout)`}
         </span>
         <Button size="sm" onClick={toggle} loading={busy}>
           {d.active ? 'Pause' : 'Resume'}
@@ -82,7 +85,13 @@ function DeploymentCard({ d, onChange }: { d: Deployment; onChange: () => void }
         </Button>
       </div>
       {d.type === 'cron' && <p className="font-mono text-[12px] text-muted">{d.cronExpression}</p>}
-      {d.type !== 'cron' && (
+      {d.type === 'form' && (
+        <div>
+          <Label hint="Anyone with the link can submit. Each submission starts a run; the fields (and file text) are its {{input}}.">Public form</Label>
+          <CopyField value={d.url!} />
+        </div>
+      )}
+      {d.type !== 'cron' && d.type !== 'form' && (
         <>
           <div>
             <Label>Endpoint</Label>
@@ -106,11 +115,146 @@ function DeploymentCard({ d, onChange }: { d: Deployment; onChange: () => void }
   );
 }
 
+type Cost = {
+  sampleRuns: number;
+  avgTokensPerRun: number;
+  perNode: Record<string, number>;
+  schedules: { deploymentId: string; cronExpression: string; runsPerMonth: number; tokensPerMonth: number }[];
+  maxTokensPerRun: number | null;
+  costPerMillion: number | null;
+};
+
+const fmtTokens = (n: number) => n.toLocaleString();
+const money = (tokens: number, perMillion: number | null) => (perMillion ? ` (about $${((tokens / 1e6) * perMillion).toFixed(tokens * perMillion < 1e6 ? 4 : 2)})` : '');
+
+/** What this pipeline costs per run and per schedule, from its recent runs, plus the per-run token limit. */
+function CostTab({ pipelineId }: { pipelineId: string }) {
+  const [cost, setCost] = useState<Cost | null>(null);
+  const [limit, setLimit] = useState('');
+  const [saving, setSaving] = useState(false);
+  const nodes = usePipeline((s) => s.nodes);
+  useEffect(() => {
+    api<Cost>(`/api/pipelines/${pipelineId}/cost`)
+      .then((c) => {
+        setCost(c);
+        setLimit(c.maxTokensPerRun ? String(c.maxTokensPerRun) : '');
+      })
+      .catch(() => {});
+  }, [pipelineId]);
+  if (!cost) return null;
+  const nameOf = (id: string) => nodes.find((n) => n.id === id)?.data.name ?? id.slice(0, 8);
+  const saveLimit = async () => {
+    setSaving(true);
+    try {
+      await api(`/api/pipelines/${pipelineId}`, { method: 'PUT', json: { maxTokensPerRun: limit.trim() ? Number(limit) : null } });
+      toast.success(limit.trim() ? 'Token limit saved' : 'Token limit removed');
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="space-y-4">
+      {cost.sampleRuns === 0 ? (
+        <p className="text-[13px] text-muted">No successful runs yet. Run the pipeline once to see what it costs.</p>
+      ) : (
+        <>
+          <p className="text-[13px]">
+            A run uses about <span className="font-semibold tabular-nums">{fmtTokens(cost.avgTokensPerRun)} tokens</span>
+            {money(cost.avgTokensPerRun, cost.costPerMillion)}, averaged over the last {cost.sampleRuns} successful run{cost.sampleRuns === 1 ? '' : 's'}.
+          </p>
+          {Object.keys(cost.perNode).length > 0 && (
+            <ul className="divide-y divide-line rounded-md border border-line">
+              {Object.entries(cost.perNode)
+                .sort((a, b) => b[1] - a[1])
+                .map(([id, t]) => (
+                  <li key={id} className="flex items-center gap-2 px-2.5 py-1.5 text-[12px]">
+                    <span className="flex-1 font-mono">{nameOf(id)}</span>
+                    <span className="tabular-nums text-muted">{fmtTokens(t)} tokens</span>
+                    <span className="w-12 text-right tabular-nums text-faint">{cost.avgTokensPerRun ? Math.round((t / cost.avgTokensPerRun) * 100) : 0}%</span>
+                  </li>
+                ))}
+            </ul>
+          )}
+          {cost.schedules.map((s) => (
+            <p key={s.deploymentId} className="text-[13px] text-muted">
+              Schedule <code className="font-mono">{s.cronExpression}</code> runs about {s.runsPerMonth.toLocaleString()} times in 30 days:{' '}
+              <span className="font-medium text-ink tabular-nums">{fmtTokens(s.tokensPerMonth)} tokens</span>
+              {money(s.tokensPerMonth, cost.costPerMillion)}.
+            </p>
+          ))}
+        </>
+      )}
+      {!cost.costPerMillion && <p className="text-[12px] text-faint">Set TOKEN_COST_PER_MILLION in server/.env to see amounts in dollars.</p>}
+      <form
+        className="flex items-end gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          saveLimit();
+        }}
+      >
+        <div className="w-56">
+          <Label htmlFor="max-tokens" hint="The run stops before its next block once it has used this many tokens. Protects against runaway loops.">
+            Token limit per run
+          </Label>
+          <Input id="max-tokens" type="number" min={100} placeholder="No limit" value={limit} onChange={(e) => setLimit(e.target.value)} />
+        </div>
+        <Button type="submit" loading={saving}>
+          Save limit
+        </Button>
+      </form>
+    </div>
+  );
+}
+
+/** Pipeline-level setting: which pipeline runs when this one fails. */
+function OnFailure({ pipelineId }: { pipelineId: string }) {
+  const [pipelines, setPipelines] = useState<{ id: string; name: string; errorPipelineId: string | null }[] | null>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    api<{ pipelines: { id: string; name: string; errorPipelineId: string | null }[] }>('/api/pipelines').then((r) => setPipelines(r.pipelines)).catch(() => setPipelines([]));
+  }, [pipelineId]);
+  if (!pipelines) return null;
+  const current = pipelines.find((p) => p.id === pipelineId)?.errorPipelineId ?? '';
+  const save = async (errorPipelineId: string) => {
+    setSaving(true);
+    try {
+      await api(`/api/pipelines/${pipelineId}`, { method: 'PUT', json: { errorPipelineId: errorPipelineId || null } });
+      setPipelines((ps) => ps!.map((p) => (p.id === pipelineId ? { ...p, errorPipelineId: errorPipelineId || null } : p)));
+      toast.success(errorPipelineId ? 'Error workflow set' : 'Error workflow removed');
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="space-y-3">
+      <p className="text-[13px] text-muted">
+        When a run of this pipeline fails, start another pipeline. Its <code className="font-mono">{'{{input.failedRun}}'}</code> holds{' '}
+        <code className="font-mono">runId</code>, <code className="font-mono">pipelineName</code>, <code className="font-mono">error</code> and <code className="font-mono">failedNodeId</code>, so it can alert you on Slack or by email.
+      </p>
+      <div className="w-72">
+        <Label htmlFor="error-pipeline">Error workflow</Label>
+        <Select id="error-pipeline" value={current} disabled={saving} onChange={(e) => save(e.target.value)}>
+          <option value="">None</option>
+          {pipelines.filter((p) => p.id !== pipelineId).map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </Select>
+      </div>
+    </div>
+  );
+}
+
 export function DeployModal({ open, onOpenChange, pipelineId }: { open: boolean; onOpenChange: (o: boolean) => void; pipelineId: string }) {
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [cron, setCron] = useState('0 9 * * 1-5');
   const [timeout, setTimeoutSecs] = useState(30);
   const [creating, setCreating] = useState(false);
+  const [formFields, setFormFields] = useState('Name, Email, Message');
+  const [formFile, setFormFile] = useState(false);
   const preview = useMemo(() => describeCron(cron), [cron]);
 
   const load = () => api<{ deployments: Deployment[] }>(`/api/deployments?pipelineId=${pipelineId}`).then((r) => setDeployments(r.deployments)).catch(() => {});
@@ -142,6 +286,9 @@ export function DeployModal({ open, onOpenChange, pipelineId }: { open: boolean;
           <Tabs.Trigger value="schedule" className={tab}>Schedule</Tabs.Trigger>
           <Tabs.Trigger value="webhook" className={tab}>Webhook</Tabs.Trigger>
           <Tabs.Trigger value="api" className={tab}>API</Tabs.Trigger>
+          <Tabs.Trigger value="form" className={tab}>Form</Tabs.Trigger>
+          <Tabs.Trigger value="failure" className={tab}>On failure</Tabs.Trigger>
+          <Tabs.Trigger value="cost" className={tab}>Cost</Tabs.Trigger>
         </Tabs.List>
 
         <Tabs.Content value="schedule" className="space-y-4 focus:outline-none">
@@ -194,6 +341,38 @@ export function DeployModal({ open, onOpenChange, pipelineId }: { open: boolean;
             </form>
           )}
           {list('api').map((d) => <DeploymentCard key={d.id} d={d} onChange={load} />)}
+        </Tabs.Content>
+
+        <Tabs.Content value="form" className="space-y-4 focus:outline-none">
+          <p className="text-[13px] text-muted">A public web form: each submission runs the pipeline with the answers as <code className="font-mono">{'{{input}}'}</code>, e.g. <code className="font-mono">{'{{input.Email}}'}</code>.</p>
+          <form
+            className="space-y-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              create({ type: 'form', formFields, formFile });
+            }}
+          >
+            <div>
+              <Label htmlFor="form-fields" hint="Comma-separated labels. Fields named Message, Comment or Details get a large text box.">Fields</Label>
+              <Input id="form-fields" value={formFields} onChange={(e) => setFormFields(e.target.value)} />
+            </div>
+            <label className="flex items-center gap-2 text-[13px]">
+              <input type="checkbox" checked={formFile} onChange={(e) => setFormFile(e.target.checked)} />
+              Also accept a text file upload (available as <code className="font-mono">{'{{input.file.text}}'}</code>)
+            </label>
+            <Button type="submit" variant="primary" loading={creating} disabled={!formFields.trim()}>
+              Create form
+            </Button>
+          </form>
+          {list('form').map((d) => <DeploymentCard key={d.id} d={d} onChange={load} />)}
+        </Tabs.Content>
+
+        <Tabs.Content value="failure" className="focus:outline-none">
+          <OnFailure pipelineId={pipelineId} />
+        </Tabs.Content>
+
+        <Tabs.Content value="cost" className="focus:outline-none">
+          <CostTab pipelineId={pipelineId} />
         </Tabs.Content>
       </Tabs.Root>
     </Modal>

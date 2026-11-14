@@ -17,22 +17,43 @@ let anthropic: Anthropic | undefined;
 let openai: OpenAI | undefined;
 
 /** With no API key configured, every call falls back to the mock provider. */
-function pickProvider(requested?: string): 'anthropic' | 'openai' | 'mock' {
+export function pickProvider(requested?: string): 'anthropic' | 'openai' | 'mock' {
   if (requested === 'openai' && process.env.OPENAI_API_KEY) return 'openai';
   if (requested !== 'mock' && process.env.ANTHROPIC_API_KEY) return 'anthropic';
   if (requested !== 'mock' && process.env.OPENAI_API_KEY) return 'openai';
   return 'mock';
 }
 
+// The SDKs retry 429s, 5xx and dropped connections with exponential backoff (honouring Retry-After).
+const maxRetries = () => Math.min(Math.max(Number(process.env.LLM_MAX_RETRIES ?? 3), 0), 8);
+/** Errors worth trying another model for: rate limits, overload, outages, and an unknown model name. */
+const FALLBACK_STATUSES = new Set([404, 408, 429, 500, 502, 503, 504, 529]);
+
+/**
+ * Calls the requested model; if it still fails with a temporary error after the SDK's retries,
+ * tries LLM_FALLBACK_MODEL once (same provider).
+ */
 export async function complete(req: CompletionRequest): Promise<Completion> {
   const provider = pickProvider(req.provider);
+  if (provider === 'mock') return callModel(provider, req, undefined);
+  const model = req.provider === provider && req.model ? req.model : DEFAULT_MODELS[provider];
+  const fallback = process.env.LLM_FALLBACK_MODEL;
+  try {
+    return await callModel(provider, req, model);
+  } catch (err) {
+    const status = (err as { status?: number })?.status;
+    if (!fallback || fallback === model || req.signal?.aborted || !status || !FALLBACK_STATUSES.has(status)) throw err;
+    console.warn(`model ${model} failed with HTTP ${status}; retrying on fallback ${fallback}`);
+    return callModel(provider, req, fallback);
+  }
+}
 
+async function callModel(provider: 'anthropic' | 'openai' | 'mock', req: CompletionRequest, model: string | undefined): Promise<Completion> {
   if (provider === 'anthropic') {
-    anthropic ??= new Anthropic();
-    const model = req.provider === 'anthropic' && req.model ? req.model : DEFAULT_MODELS.anthropic;
+    anthropic ??= new Anthropic({ maxRetries: maxRetries() });
     const res = await anthropic.beta.messages.create(
       {
-        model,
+        model: model!,
         max_tokens: 16000,
         ...(req.system ? { system: req.system } : {}),
         messages: [{ role: 'user', content: req.prompt }],
@@ -48,11 +69,10 @@ export async function complete(req: CompletionRequest): Promise<Completion> {
   }
 
   if (provider === 'openai') {
-    openai ??= new OpenAI();
-    const model = req.provider === 'openai' && req.model ? req.model : DEFAULT_MODELS.openai;
+    openai ??= new OpenAI({ maxRetries: maxRetries() });
     const res = await openai.chat.completions.create(
       {
-        model,
+        model: model!,
         messages: [
           ...(req.system ? [{ role: 'system' as const, content: req.system }] : []),
           { role: 'user' as const, content: req.prompt },
@@ -76,7 +96,7 @@ export const EMBEDDING_DIM = 1536;
 
 export async function embed(texts: string[]): Promise<number[][]> {
   if (process.env.OPENAI_API_KEY) {
-    openai ??= new OpenAI();
+    openai ??= new OpenAI({ maxRetries: maxRetries() });
     const res = await openai.embeddings.create({
       model: process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small',
       input: texts,

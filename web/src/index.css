@@ -20,6 +20,7 @@
   --color-st-running: #2f7cf6;
   --color-st-success: #1f9d55;
   --color-st-error: #d93636;
+  --color-st-waiting: #c27c0e;
 
   /* Strong curves for UI motion. */
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
@@ -64,6 +65,9 @@ body {
 .pipeline-node[data-status='error'],
 .pipeline-node[data-status='auth_error'] {
   border-color: var(--color-st-error);
+}
+.pipeline-node[data-status='waiting'] {
+  border-color: var(--color-st-waiting);
 }
 .pipeline-node[data-status='skipped'] {
   border-style: dashed;

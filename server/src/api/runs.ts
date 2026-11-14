@@ -1,9 +1,11 @@
 import { Router, type Request, type Response } from 'express';
 import { prisma, redis, newRedis, runChannel, CANCEL_CHANNEL } from '../db.ts';
 import { HttpError, parseGraph } from './http.ts';
-import { createRun, dailyBudget, tokensUsedToday } from '../runs/create.ts';
+import { createRun, dailyBudget, tokensUsedToday, costPerMillion } from '../runs/create.ts';
 import { ownPipeline } from './pipelines.ts';
 import { runQueue } from '../queue.ts';
+import { decide } from '../runs/approvals.ts';
+import { Prisma } from '@prisma/client';
 
 export const runsRouter = Router();
 
@@ -45,9 +47,18 @@ runsRouter.get('/:id', async (req, res) => {
   res.json({ run: await ownRun(req.params.id, req.userId) });
 });
 
+runsRouter.post('/:id/approval', async (req, res) => {
+  const run = await ownRun(req.params.id, req.userId);
+  if (typeof req.body?.approved !== 'boolean') throw new HttpError(400, 'approved must be true or false');
+  res.json(await decide(run.id, req.body.approved, req.body.comment));
+});
+
 runsRouter.post('/:id/cancel', async (req, res) => {
   const run = await ownRun(req.params.id, req.userId);
-  if (run.status === 'PENDING' && (await runQueue.remove(run.id))) {
+  if (run.status === 'WAITING') {
+    await prisma.run.update({ where: { id: run.id }, data: { status: 'CANCELLED', checkpoint: Prisma.DbNull, finishedAt: new Date() } });
+    await redis.publish(runChannel(run.id), JSON.stringify({ type: 'done', status: 'CANCELLED' }));
+  } else if (run.status === 'PENDING' && (await runQueue.remove(run.id))) {
     await prisma.run.update({ where: { id: run.id }, data: { status: 'CANCELLED', finishedAt: new Date() } });
     await redis.publish(runChannel(run.id), JSON.stringify({ type: 'done', status: 'CANCELLED' }));
   } else if (run.status === 'PENDING' || run.status === 'RUNNING') {
@@ -73,15 +84,19 @@ export async function streamRun(req: Request, res: Response) {
   try {
     sub.on('message', (_ch, msg) => {
       res.write(`data: ${msg}\n\n`);
-      if (JSON.parse(msg).type === 'done') finish();
+      const e = JSON.parse(msg);
+      if (e.type === 'done' && e.status !== 'WAITING') finish(); // a paused run resumes on this same stream
     });
     await sub.subscribe(runChannel(run.id));
 
     const fresh = await ownRun(run.id, req.userId);
-    for (const e of fresh.events) send({ type: 'node', nodeId: e.nodeId, status: e.status, output: e.output, error: e.error });
-    if (!['PENDING', 'RUNNING'].includes(fresh.status)) {
+    for (const e of fresh.events) send({ type: 'node', nodeId: e.nodeId, status: e.status, output: e.output, error: e.error, tokens: e.tokens });
+    if (!['PENDING', 'RUNNING', 'WAITING'].includes(fresh.status)) {
       send({ type: 'done', status: fresh.status, error: fresh.error, output: fresh.output });
       finish();
+    } else if (fresh.status === 'WAITING') {
+      const cp = fresh.checkpoint as { nodeId: string; request: string } | null;
+      send({ type: 'done', status: 'WAITING', waiting: cp && { nodeId: cp.nodeId, request: cp.request } });
     }
     await closed;
   } finally {
@@ -103,6 +118,7 @@ usageRouter.get('/', async (req, res) => {
   res.json({
     today: await tokensUsedToday(req.userId),
     budget: dailyBudget(),
+    costPerMillion: costPerMillion(),
     days: rows.map((r) => ({ day: r.day, tokens: Number(r.tokens), runs: Number(r.runs) })),
   });
 });

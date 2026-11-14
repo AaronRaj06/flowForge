@@ -10,6 +10,7 @@ import { Builder } from './pages/Builder';
 import { Templates } from './pages/Templates';
 import { Knowledge } from './pages/Knowledge';
 import { UsagePage } from './pages/Usage';
+import { Credentials } from './pages/Credentials';
 import { cx } from './components/ui';
 
 function Shell() {
@@ -28,6 +29,7 @@ function Shell() {
         </NavLink>
         <NavLink to="/templates" className={link}>Templates</NavLink>
         <NavLink to="/knowledge" className={link}>Knowledge</NavLink>
+        <NavLink to="/credentials" className={link}>Credentials</NavLink>
         <NavLink to="/usage" className={link}>Usage</NavLink>
         <span className="ml-auto truncate text-[12px] text-faint">{user?.email}</span>
         <button onClick={signOut} className="press ml-2 rounded-md p-1.5 text-faint hover:bg-sunken hover:text-ink" aria-label="Sign out" title="Sign out">
@@ -39,6 +41,7 @@ function Shell() {
         <Route path="/p/:id" element={<Builder />} />
         <Route path="/templates" element={<div className="overflow-y-auto"><Templates /></div>} />
         <Route path="/knowledge" element={<div className="overflow-y-auto"><Knowledge /></div>} />
+        <Route path="/credentials" element={<div className="overflow-y-auto"><Credentials /></div>} />
         <Route path="/usage" element={<div className="overflow-y-auto"><UsagePage /></div>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

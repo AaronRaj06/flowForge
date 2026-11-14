@@ -65,7 +65,8 @@ if (want('p2')) {
     const statuses = events.filter((e) => e.type === 'node').map((e) => `${e.nodeId}:${e.status}`);
     assert.ok(statuses.includes('a:running') || statuses.includes('a:success'), statuses.join(' '));
     assert.equal(events.at(-1).status, 'SUCCESS', JSON.stringify(events.at(-1)));
-    assert.equal(events.at(-1).output.c.output, '[mock] Summarize hello world'.length);
+    const out = events.at(-1).output;
+    assert.equal(out.c.output, out.summary.output.length);
   });
 
   await step('save, list, load pipeline + run history', async () => {
@@ -101,7 +102,7 @@ if (want('p4')) {
       ],
       edges: [{ source: 'n1', target: 'n2' }],
     };
-    const t = await api('/api/templates', { method: 'POST', json: { name: 'Greeter', category: 'Marketing', public: true, graph: tGraph } });
+    const t = await api('/api/templates', { method: 'POST', json: { name: 'Greeter', category: 'Marketing', public: false, graph: tGraph } });
     assert.equal(t.status, 201, JSON.stringify(t.body));
     assert.deepEqual(t.body.template.variables.map((v: any) => v.key), ['tone']);
     assert.equal(t.body.template.graph.nodes[0].config.apiKey, undefined);
@@ -117,7 +118,7 @@ if (want('p4')) {
     const run = await api(`/api/runs/pipeline/${p.id}`, { method: 'POST', json: { input: 'Ada' } });
     const done = (await stream(run.body.runId)).at(-1);
     assert.equal(done.status, 'SUCCESS', JSON.stringify(done));
-    assert.equal(done.output.shout.output, '[MOCK] WRITE A CHEERFUL HELLO TO ADA');
+    assert.equal(done.output.shout.output, done.output.greet.output.toUpperCase());
   });
 
   await step('knowledge base: upload a file, KB Query feeds the LLM', async () => {
@@ -202,6 +203,152 @@ if (want('p5')) {
     await api(`/api/runs/${r.body.runId}/cancel`, { method: 'POST' });
     const done = (await stream(r.body.runId)).at(-1);
     assert.equal(done.status, 'CANCELLED');
+  });
+}
+
+if (want('p6')) {
+  await step('loop runs its body per item; merge collects; retries + continue on fail', async () => {
+    const r = await api('/api/runs', {
+      method: 'POST',
+      json: {
+        input: { names: ['Ada', 'Lin', 'Kay'] },
+        graph: {
+          nodes: [
+            { id: 'L', name: 'each', type: 'loop', config: { items: 'input.input.names' } },
+            { id: 'G', name: 'greet', type: 'transform', config: { expression: 'input.item.toUpperCase()' } },
+            { id: 'M', name: 'all', type: 'merge', config: {} },
+            { id: 'F', name: 'flaky', type: 'transform', config: { expression: 'input.nope.x', retries: 1, retryDelayMs: 10, continueOnFail: true } },
+          ],
+          edges: [{ source: 'L', target: 'G' }, { source: 'G', target: 'M' }, { source: 'M', target: 'F' }],
+        },
+      },
+    });
+    const done = (await stream(r.body.runId)).at(-1);
+    assert.equal(done.status, 'SUCCESS', JSON.stringify(done));
+    assert.deepEqual(done.output.all.output, ['ADA', 'LIN', 'KAY']);
+    assert.match(done.output.flaky.error, /after 2 attempts/);
+  });
+
+  await step('error workflow starts when a pipeline fails, with the failure as input', async () => {
+    const handler = await api('/api/pipelines', { method: 'POST', json: { name: 'on-fail', graph: { nodes: [{ id: 'h', name: 'note', type: 'transform', config: { expression: '"failed: " + input.input.failedRun.pipelineName' } }], edges: [] } } });
+    const broken = await api('/api/pipelines', { method: 'POST', json: { name: 'broken', graph: { nodes: [{ id: 'b', type: 'transform', config: { expression: 'input.nope.x' } }], edges: [] } } });
+    const self = await api(`/api/pipelines/${broken.body.pipeline.id}`, { method: 'PUT', json: { errorPipelineId: broken.body.pipeline.id } });
+    assert.equal(self.status, 400);
+    const set = await api(`/api/pipelines/${broken.body.pipeline.id}`, { method: 'PUT', json: { errorPipelineId: handler.body.pipeline.id } });
+    assert.equal(set.status, 200, JSON.stringify(set.body));
+    const r = await api(`/api/runs/${broken.body.pipeline.id}`, { method: 'POST', json: {} });
+    assert.equal((await stream(r.body.runId)).at(-1).status, 'ERROR');
+    let handled: any;
+    for (let i = 0; i < 40 && !handled; i++) {
+      await new Promise((res) => setTimeout(res, 250));
+      const runs = (await api(`/api/runs?pipelineId=${handler.body.pipeline.id}`)).body.runs;
+      if (runs[0]?.status === 'SUCCESS') handled = (await api(`/api/runs/${runs[0].id}`)).body.run;
+    }
+    assert.ok(handled, 'error workflow never ran');
+    assert.equal(handled.output.note.output, 'failed: broken');
+    assert.equal(handled.input.failedRun.failedNodeId, 'b');
+  });
+}
+
+if (want('p7')) {
+  await step('cost: per-block tokens, schedule projection, and a per-run token limit', async () => {
+    const graph = {
+      nodes: [
+        { id: 'a', name: 'first', type: 'llm', config: { provider: 'mock', prompt: 'x'.repeat(400) } },
+        { id: 'b', name: 'second', type: 'llm', config: { provider: 'mock', prompt: 'again {{first.output}}' } },
+      ],
+      edges: [{ source: 'a', target: 'b' }],
+    };
+    const p = (await api('/api/pipelines', { method: 'POST', json: { name: 'costly', graph } })).body.pipeline;
+    for (let i = 0; i < 2; i++) {
+      const r = await api(`/api/runs/${p.id}`, { method: 'POST', json: {} });
+      assert.equal((await stream(r.body.runId)).at(-1).status, 'SUCCESS');
+    }
+    const dep = await api('/api/deployments', { method: 'POST', json: { pipelineId: p.id, type: 'cron', cronExpression: '0 9 * * *' } });
+    const cost = (await api(`/api/pipelines/${p.id}/cost`)).body;
+    assert.equal(cost.sampleRuns, 2);
+    assert.ok(cost.perNode.a > 100 && cost.perNode.b > 0, JSON.stringify(cost));
+    assert.equal(cost.avgTokensPerRun, cost.perNode.a + cost.perNode.b);
+    assert.ok(cost.schedules[0].runsPerMonth >= 29, JSON.stringify(cost.schedules));
+    await api(`/api/deployments/${dep.body.deployment.id}`, { method: 'PATCH', json: { active: false } });
+
+    assert.equal((await api(`/api/pipelines/${p.id}`, { method: 'PUT', json: { maxTokensPerRun: 5 } })).status, 400);
+    assert.equal((await api(`/api/pipelines/${p.id}`, { method: 'PUT', json: { maxTokensPerRun: 100 } })).status, 200);
+    const r = await api(`/api/runs/${p.id}`, { method: 'POST', json: {} });
+    const done = (await stream(r.body.runId)).at(-1);
+    assert.equal(done.status, 'ERROR');
+    assert.match(done.error, /Token limit reached/);
+    const row = (await api(`/api/runs/${r.body.runId}`)).body.run;
+    assert.ok(row.tokensUsed > 100, 'tokens of a failed run must still be billed');
+  });
+}
+
+if (want('p8')) {
+  await step('p8: approval pauses a run, the decision resumes it on the right branch, and agents run', async () => {
+    const graph = {
+      nodes: [
+        { id: 'a', name: 'draft', type: 'llm', config: { provider: 'mock', prompt: 'Reply to {{input}}' } },
+        { id: 'b', name: 'gate', type: 'approval', config: { message: 'Send {{draft.output}}?' } },
+        { id: 'c', name: 'sent', type: 'transform', config: { expression: '"sent: " + input.gate.output.comment' } },
+        { id: 'd', name: 'held', type: 'transform', config: { expression: '"held"' } },
+        { id: 'e', name: 'helper', type: 'agent', config: { provider: 'mock', prompt: 'Summarise {{sent.output}}', tools: ['http'] } },
+      ],
+      edges: [{ source: 'a', target: 'b' }, { source: 'b', target: 'c', sourceHandle: 'true' }, { source: 'b', target: 'd', sourceHandle: 'false' }, { source: 'c', target: 'e' }],
+    };
+    const p = (await api('/api/pipelines', { method: 'POST', json: { name: 'approve me', graph } })).body.pipeline;
+    const r = await api(`/api/runs/${p.id}`, { method: 'POST', json: { input: 'Ada' } });
+    const paused = (await stream(r.body.runId)).at(-1);
+    assert.equal(paused.status, 'WAITING', JSON.stringify(paused));
+    assert.equal(paused.waiting.request, 'Send [mock] Reply to Ada?');
+    const before = (await api(`/api/runs/${r.body.runId}`)).body.run;
+    assert.ok(before.tokensUsed > 0);
+
+    assert.equal((await api(`/api/runs/${r.body.runId}/approval`, { method: 'POST', json: { approved: 'yes' } })).status, 400);
+    assert.equal((await api(`/api/runs/${r.body.runId}/approval`, { method: 'POST', json: { approved: true, comment: 'ok' } })).status, 200);
+    assert.equal((await api(`/api/runs/${r.body.runId}/approval`, { method: 'POST', json: { approved: false } })).status, 409, 'only the first decision counts');
+    const done = (await stream(r.body.runId)).at(-1);
+    assert.equal(done.status, 'SUCCESS', JSON.stringify(done));
+    assert.equal(done.output.sent.output, 'sent: ok');
+    assert.equal(done.output.held, undefined);
+    assert.match(done.output.helper.output.answer, /^\[mock\]/);
+    const after = (await api(`/api/runs/${r.body.runId}`)).body.run;
+    assert.ok(after.tokensUsed > before.tokensUsed, 'tokens from before and after the pause add up');
+    assert.equal(after.events.find((e: any) => e.nodeId === 'd').status, 'skipped');
+
+    // A waiting run can be cancelled.
+    const r2 = await api(`/api/runs/${p.id}`, { method: 'POST', json: { input: 'Bob' } });
+    assert.equal((await stream(r2.body.runId)).at(-1).status, 'WAITING');
+    await api(`/api/runs/${r2.body.runId}/cancel`, { method: 'POST' });
+    assert.equal((await api(`/api/runs/${r2.body.runId}`)).body.run.status, 'CANCELLED');
+  });
+}
+
+if (want('p9')) {
+  await step('p9: credentials hide secrets; form trigger starts runs with fields and a file', async () => {
+    assert.equal((await api('/api/credentials', { method: 'POST', json: { name: 'gh', type: 'github', secret: 'not-a-token' } })).status, 400);
+    const c = await api('/api/credentials', { method: 'POST', json: { name: 'gh', type: 'github', secret: 'ghp_' + 'x'.repeat(30) } });
+    assert.equal(c.status, 201, JSON.stringify(c.body));
+    assert.equal((await api('/api/credentials', { method: 'POST', json: { name: 'gh', type: 'github', secret: 'ghp_' + 'y'.repeat(30) } })).status, 409);
+    const list = await api('/api/credentials');
+    assert.ok(!JSON.stringify(list.body).includes('xxxx'), 'secrets never come back');
+    assert.equal(list.body.credentials[0].name, 'gh');
+
+    const graph = { nodes: [{ id: 'a', name: 'shout', type: 'transform', config: { expression: 'input.input.Name.toUpperCase() + " " + input.input.file.text' } }], edges: [] };
+    const p = (await api('/api/pipelines', { method: 'POST', json: { name: 'Contact form', graph } })).body.pipeline;
+    assert.equal((await api('/api/deployments', { method: 'POST', json: { pipelineId: p.id, type: 'form', formFields: '' } })).status, 400);
+    const d = (await api('/api/deployments', { method: 'POST', json: { pipelineId: p.id, type: 'form', formFields: 'Name, Message', formFile: true } })).body.deployment;
+    assert.equal(d.webhookSecret, null);
+    const page = await fetch(d.url);
+    assert.match(await page.text(), /<label for="f0">Name<\/label>/);
+    const fd = new FormData();
+    fd.set('Name', 'ada');
+    fd.set('Message', 'hello');
+    fd.set('file', new Blob(['file body'], { type: 'text/plain' }), 'note.txt');
+    const sub = await fetch(d.url, { method: 'POST', body: fd, headers: { accept: 'application/json' } });
+    assert.equal(sub.status, 202);
+    const done = (await stream((await sub.json()).runId)).at(-1);
+    assert.equal(done.output.shout.output, 'ADA file body');
+    await api(`/api/credentials/${c.body.credential.id}`, { method: 'DELETE' });
   });
 }
 

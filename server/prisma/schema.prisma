@@ -18,7 +18,21 @@ model User {
   templates    Template[]
   deployments  Deployment[]
   chunks       KnowledgeChunk[]
+  credentials  Credential[]
   createdAt    DateTime           @default(now())
+}
+
+/// API keys and tokens for key-based integrations (Discord, Telegram, Notion, GitHub, Airtable), shared across pipelines.
+model Credential {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  type      String // discord | telegram | notion | github | airtable
+  secret    String // AES-GCM encrypted
+  createdAt DateTime @default(now())
+
+  @@unique([userId, name])
 }
 
 model Pipeline {
@@ -28,6 +42,10 @@ model Pipeline {
   name        String
   description String?
   graph       Json // { nodes: [], edges: [] }
+  /// Pipeline to run when a run of this one fails (its input describes the failure).
+  errorPipelineId String?
+  /// Stop a run once its LLM blocks have used this many tokens (guards against runaway loops).
+  maxTokensPerRun Int?
   runs        Run[]
   deployments Deployment[]
   createdAt   DateTime     @default(now())
@@ -49,6 +67,8 @@ model Run {
   output       Json?
   error        String?
   tokensUsed   Int         @default(0)
+  /// While WAITING: { context, nodeId, request } so the run can resume after an approval decision.
+  checkpoint   Json?
   events       RunEvent[]
   startedAt    DateTime    @default(now())
   finishedAt   DateTime?
@@ -62,9 +82,10 @@ model RunEvent {
   runId     String
   run       Run       @relation(fields: [runId], references: [id], onDelete: Cascade)
   nodeId    String
-  status    String // pending | running | success | error | skipped | auth_error
+  status    String // pending | running | success | error | skipped | auth_error | waiting
   output    Json?
   error     String?
+  tokens    Int       @default(0) // LLM tokens this block used in the run
   startedAt DateTime?
   endedAt   DateTime?
 
@@ -102,8 +123,11 @@ model Deployment {
   pipeline       Pipeline  @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
   userId         String
   user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type           String // cron | webhook | api
+  type           String // cron | webhook | api | form
   cronExpression String?
+  /// Form deployments: field labels shown on the public form, and whether it takes a file.
+  formFields     String[]  @default([])
+  formFile       Boolean   @default(false)
   webhookSecret  String?
   syncTimeout    Int       @default(30)
   active         Boolean   @default(true)
@@ -127,6 +151,7 @@ model KnowledgeChunk {
 enum RunStatus {
   PENDING
   RUNNING
+  WAITING
   SUCCESS
   ERROR
   CANCELLED

@@ -9,6 +9,7 @@ const STATUS_LABEL: Record<string, string> = {
   error: 'Failed',
   auth_error: 'Reconnect',
   skipped: 'Skipped',
+  waiting: 'Waiting'
 };
 
 /** Shared shell for every node type: title bar, handles, one-line config summary. */
@@ -32,6 +33,11 @@ export function BaseNode({ id, type, data, selected }: NodeProps<PipelineNode>) 
           <div className="truncate text-[13px] leading-tight font-medium">{meta.label}</div>
           <div className="truncate font-mono text-[11px] leading-tight text-faint">{data.name}</div>
         </div>
+        {data.tokens ? (
+          <span className="rounded bg-sunken px-1 font-mono text-[10.5px] text-muted tabular-nums" title={`${data.tokens.toLocaleString()} LLM tokens in the last run`}>
+            {data.tokens >= 1000 ? `${(data.tokens / 1000).toFixed(1)}k` : data.tokens} tok
+          </span>
+        ) : null}
         {data.status !== 'idle' && (
           <span className="text-[11px] font-medium text-muted" data-testid={`status-${id}`}>
             {STATUS_LABEL[data.status]}
@@ -48,8 +54,8 @@ export function BaseNode({ id, type, data, selected }: NodeProps<PipelineNode>) 
         <>
           <Handle type="source" position={Position.Right} id="true" className="handle-true" style={{ top: '38%' }} />
           <Handle type="source" position={Position.Right} id="false" className="handle-false" style={{ top: '72%' }} />
-          <span className="pointer-events-none absolute top-[38%] -right-9 -translate-y-1/2 text-[10px] font-medium text-st-success">true</span>
-          <span className="pointer-events-none absolute top-[72%] -right-9 -translate-y-1/2 text-[10px] font-medium text-st-error">false</span>
+          <span className="pointer-events-none absolute top-[38%] left-full ml-2 -translate-y-1/2 text-[10px] font-medium text-st-success">{meta.branches[0]}</span>
+          <span className="pointer-events-none absolute top-[72%] left-full ml-2 -translate-y-1/2 text-[10px] font-medium text-st-error">{meta.branches[1]}</span>
         </>
       ) : (
         <Handle type="source" position={Position.Right} />
