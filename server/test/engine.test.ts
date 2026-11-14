@@ -79,12 +79,15 @@ test('a failing node emits error and stops the run', async () => {
   assert.equal(events.at(-1)!.status, 'error');
 });
 
-test('sandbox evaluates expressions but blocks escapes, eval and infinite loops', () => {
+test('sandbox runs code in a separate isolate: no host access, memory cap, timeouts', () => {
   assert.deepEqual(evalExpression('input.a.map(x => x * 2)', { a: [1, 2] }), [2, 4]);
-  assert.throws(() => evalExpression('this.constructor.constructor("return process")()', {}));
-  assert.throws(() => evalExpression('input.constructor.constructor("return process")()', {}));
-  assert.throws(() => evalExpression('eval("1")', {}));
-  assert.throws(() => evalExpression('typeof require !== "undefined" ? require("fs") : missing', {}));
+  // Separate isolate: even via the Function constructor there is no process, require or host object.
+  assert.equal(evalExpression('(() => 0).constructor("return typeof process")()', {}), 'undefined');
+  assert.equal(evalExpression('input.constructor.constructor("return typeof require")()', {}), 'undefined');
+  assert.equal(evalExpression('typeof globalThis.process + typeof globalThis.fetch', {}), 'undefinedundefined');
+  assert.throws(() => evalExpression('missing.x', {}), /missing is not defined/);
+  assert.throws(() => evalExpression('(() => { const a = []; while (true) a.push(new Array(1e6).fill(1)); })()', {}, 5000), /more than 32 MB/);
+  assert.equal(evalExpression('1 + 1', {}), 2, 'a fresh isolate replaces the one the memory breach disposed');
   assert.throws(() => evalExpression('(() => { while (true) {} })()', {}, 50), /timed out/);
 });
 

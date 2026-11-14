@@ -1,19 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import { prisma } from '../db.ts';
 import { embed } from '../llm/provider.ts';
+import { encode, decode } from 'gpt-tokenizer';
 
 /**
- * ~500-token chunks with 50-token overlap.
- * shortcut: approximates tokens as 0.75 words; swap in a real tokenizer if chunk sizes must be exact.
+ * Exactly 500-token chunks with a 50-token overlap, counted with the o200k tokenizer.
+ * shortcut: embedding providers tokenize slightly differently; 500 stays well under every model's input limit.
  */
 export function chunkText(text: string, chunkTokens = 500, overlapTokens = 50): string[] {
-  const words = text.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
-  const size = Math.round(chunkTokens * 0.75);
-  const step = size - Math.round(overlapTokens * 0.75);
+  const tokens = encode(text.replace(/\s+/g, ' ').trim());
+  const step = chunkTokens - overlapTokens;
   const chunks: string[] = [];
-  for (let i = 0; i < words.length; i += step) {
-    chunks.push(words.slice(i, i + size).join(' '));
-    if (i + size >= words.length) break;
+  for (let i = 0; i < tokens.length; i += step) {
+    chunks.push(decode(tokens.slice(i, i + chunkTokens)).trim());
+    if (i + chunkTokens >= tokens.length) break;
   }
   return chunks;
 }

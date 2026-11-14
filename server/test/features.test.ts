@@ -10,6 +10,7 @@ import { runQueue, queueConnection } from '../src/queue.ts';
 import { saveToken, getValidToken } from '../src/integrations/tokens.ts';
 import { decrypt, encrypt } from '../src/lib/crypto.ts';
 import { chunkText, ingest, search } from '../src/kb/knowledge.ts';
+import { encode } from 'gpt-tokenizer';
 import { toRows } from '../src/integrations/sheets/actions.ts';
 import type { Graph, RunEventPayload } from '../src/engine/types.ts';
 import { generatePipeline, suggestFix, parseJsonReply } from '../src/ai/assist.ts';
@@ -180,11 +181,14 @@ test('sheets values accept rows, objects, and JSON strings', () => {
 
 // ---------- knowledge base ----------
 
-test('chunking uses ~500-token windows with overlap', () => {
+test('chunking uses exact 500-token windows with a 50-token overlap', () => {
   const words = Array.from({ length: 1000 }, (_, i) => `w${i}`).join(' ');
   const chunks = chunkText(words);
-  assert.equal(chunks[0].split(' ').length, 375);
-  assert.equal(chunks[1].split(' ')[0], `w${375 - 38}`, 'overlap of ~50 tokens');
+  const total = encode(words).length;
+  assert.ok(chunks.slice(0, -1).every((c) => encode(c).length >= 498 && encode(c).length <= 500), chunks.map((c) => encode(c).length).join());
+  assert.equal(chunks.length, Math.ceil((total - 50) / 450));
+  const tail = chunks[0].split(' ').slice(-3).join(' ');
+  assert.ok(chunks[1].includes(tail), 'consecutive chunks overlap');
   assert.ok(chunks.at(-1)!.endsWith('w999'));
 });
 

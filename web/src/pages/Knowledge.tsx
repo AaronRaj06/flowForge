@@ -41,7 +41,7 @@ export function Knowledge() {
     <div className="mx-auto w-full max-w-3xl px-6 py-8">
       <h1 className="text-[20px] font-semibold">Knowledge base</h1>
       <p className="mt-1 mb-6 text-[13px] text-muted">
-        Upload text or PDF files. They’re split into ~500-token chunks and embedded, so a <span className="font-medium text-ink">KB Query</span> block can pull the most relevant passages into an LLM prompt.
+        Upload text or PDF files. They’re split into 500-token chunks and embedded, so a <span className="font-medium text-ink">KB Query</span> block can pull the most relevant passages into an LLM prompt.
       </p>
 
       <label
