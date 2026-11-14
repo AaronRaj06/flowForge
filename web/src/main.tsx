@@ -13,6 +13,7 @@ import { UsagePage } from './pages/Usage';
 import { Credentials } from './pages/Credentials';
 import { Teams } from './pages/Teams';
 import { cx } from './components/ui';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 function Shell() {
   const { user, signOut } = useAuth();
@@ -60,7 +61,9 @@ function App() {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
-      <App />
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
       <Toaster position="bottom-center" toastOptions={{ style: { fontFamily: 'var(--font-sans)', fontSize: 13 } }} />
     </BrowserRouter>
   </StrictMode>,

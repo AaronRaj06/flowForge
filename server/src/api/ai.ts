@@ -2,8 +2,12 @@ import { Router } from 'express';
 import { HttpError } from './http.ts';
 import { handlers } from '../engine/nodes/index.ts';
 import { generatePipeline, suggestFix } from '../ai/assist.ts';
+import { rateLimit } from '../lib/rateLimit.ts';
 
 export const aiRouter = Router();
+
+// Each call is a paid LLM request.
+aiRouter.use((req, _res, next) => void rateLimit(`ai:${req.userId}`, 20, 60, 'Too many AI requests; wait a minute').then(() => next(), next));
 
 aiRouter.post('/generate', async (req, res) => {
   const description = String(req.body?.description ?? '').trim();

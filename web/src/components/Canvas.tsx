@@ -54,6 +54,7 @@ export function Canvas() {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onSelectionChange={onSelectionChange}
+        onNodeClick={() => usePipeline.getState().focusBlock()}
         deleteKeyCode={['Backspace', 'Delete']}
         fitView
         fitViewOptions={{ maxZoom: 1, padding: 0.3 }}

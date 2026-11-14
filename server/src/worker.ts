@@ -2,6 +2,9 @@ import { Worker } from 'bullmq';
 import { prisma, newRedis, CANCEL_CHANNEL } from './db.ts';
 import { QUEUE_NAME, scheduleCron, type CronJob, type RunJob } from './queue.ts';
 import { executeRun } from './runs/execute.ts';
+import { checkProductionConfig } from './lib/config.ts';
+
+checkProductionConfig();
 
 const active = new Map<string, AbortController>();
 
@@ -45,8 +48,19 @@ const crons = await prisma.deployment.findMany({ where: { type: 'cron', active: 
 for (const d of crons) await scheduleCron(d.id, d.cronExpression!);
 console.log(`worker ready (${crons.length} cron deployment${crons.length === 1 ? '' : 's'} scheduled)`);
 
+// Retention: delete finished runs (and their events, by cascade) older than RUN_RETENTION_DAYS. 0 keeps everything.
+const retentionDays = Number(process.env.RUN_RETENTION_DAYS ?? 90);
+async function pruneOldRuns() {
+  if (!(retentionDays > 0)) return;
+  const { count } = await prisma.run.deleteMany({ where: { finishedAt: { lt: new Date(Date.now() - retentionDays * 86_400_000) } } });
+  if (count) console.log(`retention: deleted ${count} run${count === 1 ? '' : 's'} older than ${retentionDays} days`);
+}
+await pruneOldRuns().catch((e) => console.error('retention failed:', e.message));
+const pruneTimer = setInterval(() => pruneOldRuns().catch((e) => console.error('retention failed:', e.message)), 6 * 3_600_000);
+
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, async () => {
+    clearInterval(pruneTimer);
     await worker.close();
     await prisma.$disconnect();
     process.exit(0);

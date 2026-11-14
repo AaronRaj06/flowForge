@@ -4,6 +4,7 @@ import cronParser from 'cron-parser';
 import multer from 'multer';
 import type { Deployment } from '@prisma/client';
 import { prisma, redis, newRedis, runChannel } from '../db.ts';
+import { rateLimit } from '../lib/rateLimit.ts';
 import { HttpError, parseGraph } from './http.ts';
 import { ownPipeline } from './pipelines.ts';
 import { accessPipeline, audit } from '../lib/access.ts';
@@ -119,14 +120,6 @@ deploymentsRouter.get('/:id/runs', async (req, res) => {
 
 // ---------- Public endpoints (no JWT; authenticated by the deployment secret) ----------
 
-/** Fixed window, per deployment. */
-async function rateLimit(deploymentId: string, perMinute = 60) {
-  const key = `rl:${deploymentId}:${Math.floor(Date.now() / 60_000)}`;
-  const n = await redis.incr(key);
-  if (n === 1) await redis.expire(key, 61);
-  if (n > perMinute) throw new HttpError(429, 'Too many requests for this deployment; try again in a minute');
-}
-
 /**
  * Accepts either the shared secret in X-Webhook-Secret, or an HMAC-SHA256 of the raw body
  * in X-Webhook-Signature ("sha256=<hex>"). Both comparisons are constant-time.
@@ -152,7 +145,7 @@ export const publicRouter = Router();
 publicRouter.post('/webhooks/:deploymentId', async (req, res) => {
   const d = await loadPublic(req.params.deploymentId, 'webhook');
   verifySecret(req, d);
-  await rateLimit(d.id);
+  await rateLimit(`deployment:${d.id}`, 60, 60, 'Too many requests for this deployment; try again in a minute');
   const run = await createRun({ userId: d.userId, graph: parseGraph(d.pipeline.graph), input: req.body ?? null, pipelineId: d.pipelineId, deploymentId: d.id });
   await prisma.deployment.update({ where: { id: d.id }, data: { lastRunAt: new Date() } });
   res.status(202).json({ runId: run.id });
@@ -178,7 +171,7 @@ publicRouter.get('/forms/:deploymentId', async (req, res) => {
 
 publicRouter.post('/forms/:deploymentId', formUpload.single('file'), async (req, res) => {
   const d = await loadPublic(String(req.params.deploymentId), 'form');
-  await rateLimit(d.id);
+  await rateLimit(`deployment:${d.id}`, 60, 60, 'Too many requests for this deployment; try again in a minute');
   const input: Record<string, unknown> = Object.fromEntries(d.formFields.map((f) => [f, String(req.body?.[f] ?? '').slice(0, 10_000)]));
   if (d.formFile && req.file) input.file = { name: req.file.originalname, type: req.file.mimetype, text: req.file.buffer.toString('utf8') };
   const run = await createRun({ userId: d.userId, graph: parseGraph(d.pipeline.graph), input, pipelineId: d.pipelineId, deploymentId: d.id });
@@ -190,7 +183,7 @@ publicRouter.post('/forms/:deploymentId', formUpload.single('file'), async (req,
 publicRouter.post('/api/:deploymentId/invoke', async (req, res) => {
   const d = await loadPublic(req.params.deploymentId, 'api');
   verifySecret(req, d);
-  await rateLimit(d.id);
+  await rateLimit(`deployment:${d.id}`, 60, 60, 'Too many requests for this deployment; try again in a minute');
   const run = await createRun({ userId: d.userId, graph: parseGraph(d.pipeline.graph), input: req.body ?? null, pipelineId: d.pipelineId, deploymentId: d.id, enqueue: false });
   await prisma.deployment.update({ where: { id: d.id }, data: { lastRunAt: new Date() } });
 

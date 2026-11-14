@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../db.ts';
 import { HttpError } from './http.ts';
+import { rateLimit } from '../lib/rateLimit.ts';
 
 declare module 'express-serve-static-core' {
   interface Request {
@@ -42,6 +43,7 @@ export function requireAuth(opts: { allowQueryToken?: boolean } = {}) {
 export const authRouter = Router();
 
 authRouter.post('/register', async (req, res) => {
+  await rateLimit(`register:${req.ip}`, 20, 3600, 'Too many sign-ups from this address; try again later');
   const email = String(req.body?.email ?? '').trim().toLowerCase();
   const password = String(req.body?.password ?? '');
   if (!/^\S+@\S+\.\S+$/.test(email)) throw new HttpError(400, 'Enter a valid email');
@@ -53,6 +55,9 @@ authRouter.post('/register', async (req, res) => {
 
 authRouter.post('/login', async (req, res) => {
   const email = String(req.body?.email ?? '').trim().toLowerCase();
+  // Per address and per account, so one attacker can't lock out a user and one account can't be guessed from many IPs quickly.
+  await rateLimit(`login-ip:${req.ip}`, 20, 600, 'Too many sign-in attempts; wait 10 minutes and try again');
+  await rateLimit(`login-email:${email}`, 10, 600, 'Too many sign-in attempts; wait 10 minutes and try again');
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user || !(await bcrypt.compare(String(req.body?.password ?? ''), user.passwordHash))) {
     throw new HttpError(401, 'Wrong email or password');

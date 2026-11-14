@@ -24,12 +24,12 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_started }
-    command: sh -c "npm run db:setup && npx tsx src/api/index.ts"
+    command: sh -c "npm run db:setup && exec node --import tsx src/api/index.ts" # exec: the API gets SIGTERM directly and shuts down cleanly
     ports: ["4000:4000"]
 
   worker:
     <<: *server
-    command: npx tsx src/worker.ts
+    command: node --import tsx src/worker.ts # one process, so SIGTERM reaches the shutdown handler
     ports: []
     restart: on-failure # retries until the api's db:setup has created the tables
 

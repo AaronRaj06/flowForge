@@ -7,14 +7,24 @@ const GROUPS = ['Core', 'Integrations', 'Knowledge'] as const;
 
 export function NodePalette() {
   const addNode = usePipeline((s) => s.addNode);
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, setCenter, getZoom } = useReactFlow();
 
-  // Keyboard / click fallback for drag-and-drop: drop near the canvas centre.
+  // Keyboard / click fallback for drag-and-drop: place the block to the right of the selected
+  // (or last) block so it never covers it, or at the canvas centre on an empty canvas.
   const addAtCentre = (type: string) => {
-    const canvas = document.querySelector('.react-flow')?.getBoundingClientRect();
-    const p = canvas ? screenToFlowPosition({ x: canvas.left + canvas.width / 2, y: canvas.top + canvas.height / 2 }) : { x: 0, y: 0 };
-    const jitter = (usePipeline.getState().nodes.length % 5) * 24;
-    addNode(type, { x: p.x - 120 + jitter, y: p.y - 30 + jitter });
+    const { nodes, selectedId } = usePipeline.getState();
+    const anchor = nodes.find((n) => n.id === selectedId) ?? nodes.at(-1);
+    let p: { x: number; y: number };
+    if (anchor) {
+      p = { x: anchor.position.x + 300, y: anchor.position.y };
+      while (nodes.some((n) => Math.abs(n.position.x - p.x) < 260 && Math.abs(n.position.y - p.y) < 110)) p.y += 140;
+    } else {
+      const canvas = document.querySelector('.react-flow')?.getBoundingClientRect();
+      const c = canvas ? screenToFlowPosition({ x: canvas.left + canvas.width / 2, y: canvas.top + canvas.height / 2 }) : { x: 0, y: 0 };
+      p = { x: c.x - 120, y: c.y - 30 };
+    }
+    addNode(type, p);
+    if (anchor) setCenter(p.x + 120, p.y + 40, { zoom: getZoom(), duration: 200 });
   };
 
   return (

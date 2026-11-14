@@ -68,6 +68,8 @@ export async function executeRun(runId: string, signal?: AbortSignal) {
       onEvent: (e) => recordEvent(runId, e),
     });
     const { __approvals: _, ...rest } = res.context; // internal resume state
+    // The context holds each result under both the block's id and its name (for placeholders); show it once, by name.
+    for (const n of graph.nodes) if (n.name && n.name !== n.id) delete rest[n.id];
     output = rest;
     tokensUsed = res.tokensUsed;
   } catch (err) {

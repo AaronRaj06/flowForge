@@ -120,6 +120,7 @@ model Run {
 
   @@index([userId, startedAt])
   @@index([deploymentId, startedAt])
+  @@index([finishedAt])
 }
 
 model RunEvent {

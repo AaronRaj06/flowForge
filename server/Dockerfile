@@ -10,4 +10,4 @@ RUN npm ci -w server --include-workspace-root=false
 COPY server server
 WORKDIR /app/server
 RUN npx prisma generate
-CMD ["npx", "tsx", "src/api/index.ts"]
+CMD ["node", "--import", "tsx", "src/api/index.ts"]

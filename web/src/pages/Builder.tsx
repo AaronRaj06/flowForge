@@ -18,6 +18,7 @@ export function Builder() {
   const navigate = useNavigate();
   const load = usePipeline((s) => s.load);
   const selectedId = usePipeline((s) => s.selectedId);
+  const focusTick = usePipeline((s) => s.focusTick);
   const [tab, setTab] = useState<'block' | 'run'>('block');
 
   useEffect(() => {
@@ -33,7 +34,7 @@ export function Builder() {
 
   useEffect(() => {
     if (selectedId) setTab('block');
-  }, [selectedId]);
+  }, [selectedId, focusTick]);
 
   // Warn before leaving with unsaved edits.
   useEffect(() => {

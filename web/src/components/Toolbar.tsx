@@ -96,7 +96,16 @@ export function Toolbar({ onRunStarted }: { onRunStarted: () => void }) {
           ))}
         </select>
       )}
-      <Button variant="ghost" onClick={() => navigate('/')} title="New pipeline">
+      <Button
+        variant="ghost"
+        title="New pipeline"
+        onClick={() => {
+          if (dirty && !window.confirm('Discard unsaved changes and start a new pipeline?')) return;
+          // Load directly too: navigating to "/" while already on "/" would not reset the canvas.
+          usePipeline.getState().load({ id: null, name: 'Untitled pipeline', graph: { nodes: [], edges: [] } });
+          navigate('/');
+        }}
+      >
         <Plus size={14} /> New
       </Button>
       {!viewer && <>

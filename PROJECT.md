@@ -107,15 +107,22 @@ Flowforge treats an AI workflow as a **directed acyclic graph (DAG)** of blocks:
 | `Deployment` | type (cron / webhook / api), cronExpression, webhookSecret |
 | `knowledge_chunks` | content, embedding `vector(1536)` |
 
-## 8. Security and Cost Controls
+## 8. Security, Cost Controls and Operations
 
-- OAuth tokens are encrypted at rest with AES-256-GCM.
-- HTTP blocks can't reach localhost or private IP ranges by default (SSRF protection).
-- User expressions run in a `node:vm` sandbox with no `eval` and a 500 ms timeout.
+- OAuth tokens and saved credentials are encrypted at rest with AES-256-GCM.
+- HTTP blocks can't reach localhost or private IP ranges (SSRF protection, checked again on the IP actually connected to).
+- User expressions run in an isolated V8 sandbox (isolated-vm) with a 500 ms timeout and a 32 MB memory cap.
 - Webhook secrets are compared in constant time, and HMAC signatures are supported.
 - API keys, tokens and auth headers are removed when a pipeline is saved as a template.
-- A per-user daily LLM token budget (50,000 by default) is checked before a run is queued.
-- Users can only see and change their own pipelines, runs and deployments.
+- Token budgets per user (50,000 a day by default), per team and per run are checked before a run is queued.
+- Users see only their own pipelines, runs and deployments, plus those of teams they belong to, limited by role (owner, editor, viewer).
+- Rate limits (Redis, shared by all API instances): sign-in 10 attempts per account and 20 per address every 10 minutes, 20 sign-ups per address per hour, 20 AI requests per user per minute, 60 calls per deployment per minute, 30 approval decisions per address per minute.
+- Security headers on every response (`nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, a Content Security Policy), no `X-Powered-By`; nginx adds gzip and its own headers.
+- In production the API and worker refuse to start with missing or weak secrets (`JWT_SECRET` and `TOKEN_ENCRYPTION_KEY` must be random and at least 32 characters).
+- `/api/health` checks Postgres and Redis and returns 503 if either is down, so the orchestrator stops routing to a broken instance.
+- API and worker shut down cleanly on `SIGTERM` (in-flight requests and jobs finish first).
+- The worker deletes finished runs older than `RUN_RETENTION_DAYS` (90 by default).
+- Five official starter templates are seeded on every start (Slack summary, support triage, document Q&A, API digest by email, approve-then-send).
 
 ## 9. Current Status
 
@@ -124,8 +131,9 @@ Flowforge treats an AI workflow as a **directed acyclic graph (DAG)** of blocks:
 - **LLM provider:** Google Gemini through its OpenAI-compatible endpoint (`gemini-flash-lite-latest` for chat, `gemini-embedding-001` for 1536-dimension embeddings). Chat, templates and knowledge-base search have been checked against it.
 - **Roadmap:** steps 1 to 6 are built, including Part D's teams, observability and deployment pipeline (see section 11).
 - **Tests:**
-  - Unit and feature tests: 29/29 pass (engine, isolate sandbox, approvals, agents, `cloneGraph` property test, templates, OAuth refresh and revocation, key-based integrations with stubbed APIs, knowledge base, AI assist, LLM fallback).
+  - Unit and feature tests: 32/32 pass (production config check, rate limiter, starter templates, engine, isolate sandbox, approvals, agents, `cloneGraph` property test, templates, OAuth refresh and revocation, key-based integrations with stubbed APIs, knowledge base, AI assist, LLM fallback).
   - End-to-end smoke test: 13 phases pass against the running stack, on the mock provider and on real Gemini, and against the production stack behind nginx.
+  - Real accounts (14 Nov 2026): all eight app integrations delivered from saved pipelines: Gmail (email sent), Slack (posted to a channel), Google Sheets (rows written and read back), Discord, Telegram, GitHub (issue opened), Airtable (record added) and Notion (page created).
 
 ### Running it
 

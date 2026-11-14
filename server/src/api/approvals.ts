@@ -3,6 +3,7 @@ import { prisma } from '../db.ts';
 import { safeEqual } from '../lib/crypto.ts';
 import { approvalToken, decide } from '../runs/approvals.ts';
 import { HttpError } from './http.ts';
+import { rateLimit } from '../lib/rateLimit.ts';
 
 /** Public approve/reject page for the link in approval emails and Slack messages; the HMAC token is the credential. */
 export const approvalsRouter = Router();
@@ -33,6 +34,7 @@ approvalsRouter.get('/approvals/:runId/:token', async (req, res) => {
 });
 
 approvalsRouter.post('/approvals/:runId/:token', express.urlencoded({ extended: false }), async (req, res) => {
+  await rateLimit(`approval:${req.ip}`, 30);
   const { run } = await load(req.params.runId, req.params.token);
   const approved = req.body?.decision === 'approve';
   await decide(run.id, approved, req.body?.comment);

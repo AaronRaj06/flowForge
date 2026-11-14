@@ -44,6 +44,8 @@ type State = {
   nodes: PipelineNode[];
   edges: Edge[];
   selectedId: string | null;
+  /** Bumped on every block click, so the side panel can switch to the Block tab even when the selection doesn't change. */
+  focusTick: number;
   dirty: boolean;
   run: RunState;
 
@@ -54,6 +56,7 @@ type State = {
   updateNodeConfig: (id: string, config: Record<string, any>) => void;
   renameNode: (id: string, name: string) => void;
   select: (id: string | null) => void;
+  focusBlock: () => void;
   setName: (name: string) => void;
   getPipelineJSON: () => PipelineJSON;
   load: (p: { id: string | null; name: string; graph: Partial<PipelineJSON>; role?: Role; teamId?: string | null }) => void;
@@ -84,6 +87,7 @@ export const usePipeline = create<State>((set, get) => ({
   nodes: [],
   edges: [],
   selectedId: null,
+  focusTick: 0,
   dirty: false,
   run: { runId: null, status: 'idle' },
 
@@ -124,6 +128,7 @@ export const usePipeline = create<State>((set, get) => ({
   renameNode: (id, name) =>
     set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, name } } : n)), dirty: true })),
   select: (id) => set({ selectedId: id }),
+  focusBlock: () => set((s) => ({ focusTick: s.focusTick + 1 })),
   setName: (name) => set({ name, dirty: true }),
 
   getPipelineJSON: () => {

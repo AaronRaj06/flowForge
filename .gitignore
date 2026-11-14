@@ -8,3 +8,4 @@ dump.rdb
 .agents/skills/
 .claude/skills/
 .env.prod
+.playwright-mcp/
