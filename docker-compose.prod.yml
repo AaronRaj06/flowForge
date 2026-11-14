@@ -1,0 +1,57 @@
+# Production stack: docker compose -f docker-compose.prod.yml --env-file deploy/.env.prod up -d --build
+# Use managed Postgres/Redis by setting DATABASE_URL / REDIS_URL in the env file and removing those services.
+# Scale run throughput with: docker compose -f docker-compose.prod.yml up -d --scale worker=4
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-flowforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: flowforge
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flowforge}"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+    restart: unless-stopped
+
+  api: &server
+    build: { context: ., dockerfile: server/Dockerfile }
+    env_file: ${SERVER_ENV_FILE:-deploy/.env.prod}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-flowforge}:${POSTGRES_PASSWORD}@postgres:5432/flowforge}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      NODE_ENV: production
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+    command: sh -c "npm run db:setup && npx tsx src/api/index.ts"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      retries: 10
+    restart: unless-stopped
+
+  worker:
+    <<: *server
+    command: npx tsx src/worker.ts
+    depends_on:
+      api: { condition: service_healthy } # the api applies the schema first
+    healthcheck: { disable: true }
+
+  web:
+    build: { context: ., dockerfile: web/Dockerfile.prod }
+    depends_on:
+      api: { condition: service_healthy }
+    ports: ["${WEB_PORT:-80}:80"]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

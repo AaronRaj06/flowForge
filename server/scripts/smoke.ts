@@ -352,4 +352,91 @@ if (want('p9')) {
   });
 }
 
+if (want('p10')) {
+  await step('p10: teams share pipelines by role, enforce a team quota, and keep an audit log', async () => {
+    const me = token;
+    const register = async (tag: string) => {
+      const email = `smoke-${tag}-${Date.now()}@flowforge.dev`;
+      const r = await api('/api/auth/register', { method: 'POST', json: { email, password: 'password123' } });
+      return { email, token: r.body.token as string };
+    };
+    const editor = await register('editor');
+    const viewer = await register('viewer');
+    const outsider = await register('outsider');
+    const as = async <T>(t: string, fn: () => Promise<T>) => {
+      token = t;
+      try {
+        return await fn();
+      } finally {
+        token = me;
+      }
+    };
+
+    const team = (await api('/api/teams', { method: 'POST', json: { name: 'Ops' } })).body.team;
+    assert.equal((await api(`/api/teams/${team.id}/members`, { method: 'POST', json: { email: editor.email, role: 'editor' } })).status, 201);
+    assert.equal((await api(`/api/teams/${team.id}/members`, { method: 'POST', json: { email: viewer.email, role: 'viewer' } })).status, 201);
+    assert.equal((await api(`/api/teams/${team.id}/members`, { method: 'POST', json: { email: 'nobody@nowhere.dev' } })).status, 404);
+
+    const graph = { nodes: [{ id: 'a', name: 'big', type: 'llm', config: { provider: 'mock', prompt: 'x'.repeat(4000) } }], edges: [] };
+    const p = (await api('/api/pipelines', { method: 'POST', json: { name: 'Team pipe', graph, teamId: team.id } })).body.pipeline;
+
+    // Visibility and roles.
+    await as(viewer.token, async () => {
+      const list = await api('/api/pipelines');
+      assert.equal(list.body.pipelines.find((x: any) => x.id === p.id)?.role, 'viewer');
+      assert.equal((await api(`/api/pipelines/${p.id}`)).status, 200);
+      assert.equal((await api(`/api/pipelines/${p.id}`, { method: 'PUT', json: { name: 'hacked' } })).status, 403);
+      assert.equal((await api(`/api/runs/${p.id}`, { method: 'POST', json: {} })).status, 403);
+      assert.equal((await api(`/api/deployments?pipelineId=${p.id}`)).status, 403, 'viewers never see webhook secrets');
+      assert.equal((await api(`/api/teams/${team.id}/members`, { method: 'POST', json: { email: outsider.email } })).status, 403);
+    });
+    await as(outsider.token, async () => {
+      assert.equal((await api(`/api/pipelines/${p.id}`)).status, 404);
+      assert.equal((await api(`/api/teams/${team.id}`)).status, 404);
+      assert.equal((await api(`/api/audit?teamId=${team.id}`)).status, 404);
+    });
+    const run = await as(editor.token, async () => {
+      assert.equal((await api(`/api/pipelines/${p.id}`, { method: 'PUT', json: { name: 'Team pipe v2' } })).status, 200);
+      const r = await api(`/api/runs/${p.id}`, { method: 'POST', json: {} });
+      assert.equal(r.status, 202);
+      assert.equal((await stream(r.body.runId)).at(-1).status, 'SUCCESS');
+      return r.body.runId;
+    });
+    // The owner and the viewer both see the editor's run in the pipeline's history.
+    assert.ok((await api(`/api/runs?pipelineId=${p.id}`)).body.runs.some((r: any) => r.id === run));
+    assert.equal(await as(viewer.token, async () => (await api(`/api/runs/${run}`)).status), 200);
+    assert.equal(await as(outsider.token, async () => (await api(`/api/runs/${run}`)).status), 404);
+
+    // Team quota: the editor's run used >1,000 tokens, so the next one is refused for everyone.
+    assert.equal((await api(`/api/teams/${team.id}`, { method: 'PATCH', json: { dailyTokenBudget: 1000 } })).status, 200);
+    const over = await api(`/api/runs/${p.id}`, { method: 'POST', json: {} });
+    assert.equal(over.status, 429);
+    assert.match(over.body.error, /Team “Ops” has used its daily token budget/);
+    const t = (await api(`/api/teams/${team.id}`)).body.team;
+    assert.ok(t.tokensToday >= 1000 && t.members.length === 3, JSON.stringify(t));
+
+    // Owner rules.
+    assert.equal((await api(`/api/teams/${team.id}/members/${t.members[0].userId}`, { method: 'DELETE' })).status, 400, 'the last owner can’t leave');
+    assert.equal((await api(`/api/teams/${team.id}/members/${t.members[1].userId}`, { method: 'PATCH', json: { role: 'viewer' } })).status, 200);
+    assert.equal(await as(editor.token, async () => (await api(`/api/pipelines/${p.id}`, { method: 'PUT', json: { name: 'x' } })).status), 403, 'demoted to viewer');
+
+    // Audit log, newest first.
+    const actions = (await api(`/api/audit?teamId=${team.id}`)).body.events.map((e: any) => `${e.action}:${e.by.split('-')[1]}`);
+    for (const a of ['member.role', 'team.update', 'run.start', 'pipeline.update', 'pipeline.create', 'member.add', 'team.create']) {
+      assert.ok(actions.some((x: string) => x.startsWith(a)), `${a} missing from ${actions.join(' ')}`);
+    }
+    assert.ok(actions.includes('pipeline.update:editor'), 'events record who did it');
+
+    // Deleting the team hands its pipelines back to their creators.
+    assert.equal((await api(`/api/teams/${team.id}`, { method: 'DELETE' })).status, 204);
+    assert.equal((await api(`/api/pipelines/${p.id}`)).body.pipeline.teamId, null);
+    assert.equal(await as(viewer.token, async () => (await api(`/api/pipelines/${p.id}`)).status), 404);
+
+    // Observability: per-pipeline metrics and recent failures.
+    const m = (await api('/api/usage/pipelines')).body;
+    assert.ok(Array.isArray(m.pipelines) && Array.isArray(m.failures));
+    assert.ok(m.pipelines.some((x: any) => x.pipelineId === p.id && x.runs >= 1 && x.successRate === 1), JSON.stringify(m.pipelines));
+  });
+}
+
 console.log('smoke passed');

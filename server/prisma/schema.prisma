@@ -19,7 +19,49 @@ model User {
   deployments  Deployment[]
   chunks       KnowledgeChunk[]
   credentials  Credential[]
+  memberships  Membership[]
+  auditEvents  AuditEvent[]
   createdAt    DateTime           @default(now())
+}
+
+model Team {
+  id               String       @id @default(uuid())
+  name             String
+  /// Tokens all of the team's pipelines may use per day (on top of each member's own budget).
+  dailyTokenBudget Int?
+  members          Membership[]
+  pipelines        Pipeline[]
+  auditEvents      AuditEvent[]
+  createdAt        DateTime     @default(now())
+}
+
+model Membership {
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      String // owner | editor | viewer
+  createdAt DateTime @default(now())
+
+  @@id([teamId, userId])
+  @@index([userId])
+}
+
+/// Who did what, for team activity feeds and personal history.
+model AuditEvent {
+  id         String   @id @default(uuid())
+  teamId     String?
+  team       Team?    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action     String // e.g. pipeline.update, member.add, run.start
+  targetType String?
+  targetId   String?
+  detail     Json?
+  createdAt  DateTime @default(now())
+
+  @@index([teamId, createdAt])
+  @@index([userId, createdAt])
 }
 
 /// API keys and tokens for key-based integrations (Discord, Telegram, Notion, GitHub, Airtable), shared across pipelines.
@@ -39,6 +81,9 @@ model Pipeline {
   id          String       @id @default(uuid())
   userId      String
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Set when the pipeline belongs to a team workspace; its members get access by role.
+  teamId      String?
+  team        Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
   name        String
   description String?
   graph       Json // { nodes: [], edges: [] }

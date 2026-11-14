@@ -4,7 +4,7 @@ import { api } from '../lib/api';
 import { usePipeline } from '../store/pipelineStore';
 import { cx } from './ui';
 
-type Row = { id: string; name: string; updatedAt: string };
+type Row = { id: string; name: string; updatedAt: string; team: { id: string; name: string } | null; role: string };
 
 export function PipelineList() {
   const [rows, setRows] = useState<Row[] | null>(null);
@@ -30,9 +30,11 @@ export function PipelineList() {
             <li key={p.id}>
               <Link
                 to={`/p/${p.id}`}
-                className={cx('block truncate rounded-md px-2 py-1.5 text-[13px] hover:bg-sunken', p.id === current ? 'bg-sunken font-medium text-ink' : 'text-muted')}
+                className={cx('flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] hover:bg-sunken', p.id === current ? 'bg-sunken font-medium text-ink' : 'text-muted')}
+                title={p.team ? `${p.team.name} · you’re ${p.role === 'owner' ? 'the creator' : `a ${p.role}`}` : undefined}
               >
-                {p.name}
+                <span className="truncate">{p.name}</span>
+                {p.team && <span className="ml-auto shrink-0 rounded bg-surface px-1 text-[10.5px] text-faint">{p.team.name}</span>}
               </Link>
             </li>
           ))}

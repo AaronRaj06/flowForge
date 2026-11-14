@@ -1,6 +1,7 @@
 import type { Graph, NodeContext, NodeHandler } from '../types.ts';
 import { complete, type Completion, type CompletionRequest } from '../../llm/provider.ts';
 import { prisma } from '../../db.ts';
+import { editablePipelines } from '../../lib/access.ts';
 import { http } from './http.ts';
 import { kbQuery } from './kb.ts';
 
@@ -37,7 +38,8 @@ async function buildTools(selected: string[], ctx: NodeContext): Promise<Tool[]>
   const ids = selected.filter((t) => t.startsWith('pipeline:')).map((t) => t.slice(9));
   if (ids.length) {
     if (ctx.depth >= MAX_DEPTH) throw new Error(`Agents can call pipelines at most ${MAX_DEPTH} levels deep`);
-    const pipelines = await prisma.pipeline.findMany({ where: { id: { in: ids }, userId: ctx.userId }, select: { id: true, name: true, description: true, graph: true } });
+    if (!ctx.userId) throw new Error('Pipeline tools need a signed-in user');
+    const pipelines = await prisma.pipeline.findMany({ where: { id: { in: ids }, ...editablePipelines(ctx.userId) }, select: { id: true, name: true, description: true, graph: true } });
     const { runPipeline } = await import('../runner.ts'); // runner imports the handlers, so load it lazily
     for (const p of pipelines) {
       tools.push({

@@ -11,6 +11,7 @@ import { Templates } from './pages/Templates';
 import { Knowledge } from './pages/Knowledge';
 import { UsagePage } from './pages/Usage';
 import { Credentials } from './pages/Credentials';
+import { Teams } from './pages/Teams';
 import { cx } from './components/ui';
 
 function Shell() {
@@ -29,6 +30,7 @@ function Shell() {
         </NavLink>
         <NavLink to="/templates" className={link}>Templates</NavLink>
         <NavLink to="/knowledge" className={link}>Knowledge</NavLink>
+        <NavLink to="/teams" className={link}>Teams</NavLink>
         <NavLink to="/credentials" className={link}>Credentials</NavLink>
         <NavLink to="/usage" className={link}>Usage</NavLink>
         <span className="ml-auto truncate text-[12px] text-faint">{user?.email}</span>
@@ -41,6 +43,7 @@ function Shell() {
         <Route path="/p/:id" element={<Builder />} />
         <Route path="/templates" element={<div className="overflow-y-auto"><Templates /></div>} />
         <Route path="/knowledge" element={<div className="overflow-y-auto"><Knowledge /></div>} />
+        <Route path="/teams" element={<div className="overflow-y-auto"><Teams /></div>} />
         <Route path="/credentials" element={<div className="overflow-y-auto"><Credentials /></div>} />
         <Route path="/usage" element={<div className="overflow-y-auto"><UsagePage /></div>} />
         <Route path="*" element={<Navigate to="/" replace />} />

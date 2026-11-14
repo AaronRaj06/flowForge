@@ -3,6 +3,7 @@ import { prisma } from '../db.ts';
 import { encrypt } from '../lib/crypto.ts';
 import { CREDENTIAL_TYPES } from '../integrations/keyed/index.ts';
 import { HttpError } from './http.ts';
+import { audit } from '../lib/access.ts';
 
 /** One place for the API keys key-based blocks use. Secrets go in, never come back out. */
 export const credentialsRouter = Router();
@@ -23,11 +24,13 @@ credentialsRouter.post('/', async (req, res) => {
   if (!t.check.test(secret)) throw new HttpError(400, `That doesn’t look like a ${t.label} ${t.secret.toLowerCase()}`);
   if (await prisma.credential.findFirst({ where: { userId: req.userId, name } })) throw new HttpError(409, `You already have a credential called “${name}”`);
   const credential = await prisma.credential.create({ data: { userId: req.userId, name, type, secret: encrypt(secret) }, select: fields });
+  await audit(req.userId, 'credential.create', { targetType: 'credential', targetId: credential.id, detail: { name, type } });
   res.status(201).json({ credential });
 });
 
 credentialsRouter.delete('/:id', async (req, res) => {
   const { count } = await prisma.credential.deleteMany({ where: { id: req.params.id, userId: req.userId } });
   if (!count) throw new HttpError(404, 'Credential not found');
+  await audit(req.userId, 'credential.delete', { targetType: 'credential', targetId: req.params.id });
   res.status(204).end();
 });

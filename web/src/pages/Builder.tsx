@@ -24,7 +24,7 @@ export function Builder() {
     if (!id) return load({ id: null, name: 'Untitled pipeline', graph: { nodes: [], edges: [] } });
     if (usePipeline.getState().pipelineId === id) return; // just saved; keep canvas state
     api(`/api/pipelines/${id}`)
-      .then(({ pipeline }) => load({ id: pipeline.id, name: pipeline.name, graph: pipeline.graph }))
+      .then(({ pipeline }) => load({ id: pipeline.id, name: pipeline.name, graph: pipeline.graph, role: pipeline.role, teamId: pipeline.teamId }))
       .catch((e) => {
         toast.error(errorMessage(e));
         navigate('/', { replace: true });

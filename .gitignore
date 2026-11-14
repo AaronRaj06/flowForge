@@ -7,3 +7,4 @@ dump.rdb
 .claude/settings.local.json
 .agents/skills/
 .claude/skills/
+.env.prod

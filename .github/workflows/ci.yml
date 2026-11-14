@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  NODE_OPTIONS: --no-node-snapshot # isolated-vm
+  DATABASE_URL: postgresql://flowforge:flowforge@localhost:5432/flowforge
+  REDIS_URL: redis://localhost:6379
+  JWT_SECRET: ci-secret
+  PUBLIC_URL: http://localhost:4000
+  DAILY_TOKEN_BUDGET: "1000000"
+  # No LLM keys: every LLM call uses the built-in mock provider.
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env: { POSTGRES_USER: flowforge, POSTGRES_PASSWORD: flowforge, POSTGRES_DB: flowforge }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U flowforge" --health-interval 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Database schema
+        working-directory: server
+        run: npx prisma generate && npm run db:setup
+      - name: Type-check
+        run: (cd server && npx tsc --noEmit -p .) && (cd web && npx tsc --noEmit)
+      - name: Unit and feature tests
+        working-directory: server
+        run: npx tsx --test test/*.test.ts
+      - name: End-to-end smoke test
+        working-directory: server
+        run: |
+          npx tsx src/api/index.ts > api.log 2>&1 &
+          npx tsx src/worker.ts > worker.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf localhost:4000/api/health && break; sleep 1; done
+          npx tsx scripts/smoke.ts
+      - name: Server logs on failure
+        if: failure()
+        working-directory: server
+        run: tail -n 100 api.log worker.log || true
+      - name: Web build
+        working-directory: web
+        run: npx vite build
+
+  # On main, publish production images to GitHub Container Registry. Deploying them is one command
+  # on the host: docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d
+  images:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lowercase owner (registry names must be lowercase)
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          push: true
+          tags: ghcr.io/${{ env.OWNER }}/flowforge-server:latest,ghcr.io/${{ env.OWNER }}/flowforge-server:${{ github.sha }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: web/Dockerfile.prod
+          push: true
+          tags: ghcr.io/${{ env.OWNER }}/flowforge-web:latest,ghcr.io/${{ env.OWNER }}/flowforge-web:${{ github.sha }}

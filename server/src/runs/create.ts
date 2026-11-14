@@ -11,10 +11,20 @@ export const costPerMillion = () => {
   return Number.isFinite(v) && v > 0 ? v : null;
 };
 
-export async function tokensUsedToday(userId: string) {
+const startOfDay = () => {
   const since = new Date();
   since.setHours(0, 0, 0, 0);
-  const agg = await prisma.run.aggregate({ where: { userId, startedAt: { gte: since } }, _sum: { tokensUsed: true } });
+  return since;
+};
+
+export async function tokensUsedToday(userId: string) {
+  const agg = await prisma.run.aggregate({ where: { userId, startedAt: { gte: startOfDay() } }, _sum: { tokensUsed: true } });
+  return agg._sum.tokensUsed ?? 0;
+}
+
+/** Tokens all runs of a team's pipelines used today, whoever started them. */
+export async function teamTokensUsedToday(teamId: string) {
+  const agg = await prisma.run.aggregate({ where: { pipeline: { teamId }, startedAt: { gte: startOfDay() } }, _sum: { tokensUsed: true } });
   return agg._sum.tokensUsed ?? 0;
 }
 
@@ -30,6 +40,13 @@ export async function createRun(opts: {
   const used = await tokensUsedToday(opts.userId);
   if (used >= dailyBudget()) {
     throw new HttpError(429, `Daily token budget used up (${used.toLocaleString()} / ${dailyBudget().toLocaleString()}). It resets at midnight.`);
+  }
+  if (opts.pipelineId) {
+    const team = (await prisma.pipeline.findUnique({ where: { id: opts.pipelineId }, select: { team: { select: { id: true, name: true, dailyTokenBudget: true } } } }))?.team;
+    if (team?.dailyTokenBudget) {
+      const teamUsed = await teamTokensUsedToday(team.id);
+      if (teamUsed >= team.dailyTokenBudget) throw new HttpError(429, `Team “${team.name}” has used its daily token budget (${teamUsed.toLocaleString()} / ${team.dailyTokenBudget.toLocaleString()}). It resets at midnight.`);
+    }
   }
   const run = await prisma.run.create({
     data: {

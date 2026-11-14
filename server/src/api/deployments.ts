@@ -6,6 +6,7 @@ import type { Deployment } from '@prisma/client';
 import { prisma, redis, newRedis, runChannel } from '../db.ts';
 import { HttpError, parseGraph } from './http.ts';
 import { ownPipeline } from './pipelines.ts';
+import { accessPipeline, audit } from '../lib/access.ts';
 import { scheduleCron, unscheduleCron, enqueueRun } from '../queue.ts';
 import { createRun } from '../runs/create.ts';
 import { safeEqual, hmacHex } from '../lib/crypto.ts';
@@ -45,15 +46,20 @@ function parseFormFields(raw: unknown): string[] {
   return unique;
 }
 
+/** Deployments are managed by whoever can edit their pipeline (team editors included); viewers never see secrets. */
 async function ownDeployment(id: string, userId: string) {
-  const d = await prisma.deployment.findFirst({ where: { id, userId } });
+  const d = await prisma.deployment.findUnique({ where: { id } }).catch(() => null);
   if (!d) throw new HttpError(404, 'Deployment not found');
-  return d;
+  const p = await accessPipeline(d.pipelineId, userId, 'edit').catch((e) => {
+    throw e.status === 403 ? e : new HttpError(404, 'Deployment not found');
+  });
+  return { ...d, teamId: p.teamId };
 }
 
 deploymentsRouter.get('/', async (req, res) => {
+  const pipelineId = req.query.pipelineId ? (await accessPipeline(String(req.query.pipelineId), req.userId, 'edit')).id : null;
   const deployments = await prisma.deployment.findMany({
-    where: { userId: req.userId, ...(req.query.pipelineId ? { pipelineId: String(req.query.pipelineId) } : {}) },
+    where: pipelineId ? { pipelineId } : { userId: req.userId },
     orderBy: { createdAt: 'desc' },
   });
   res.json({ deployments: deployments.map(present) });
@@ -78,6 +84,7 @@ deploymentsRouter.post('/', async (req, res) => {
     },
   });
   if (type === 'cron') await scheduleCron(d.id, d.cronExpression!);
+  await audit(req.userId, 'deployment.create', { teamId: pipeline.teamId, targetType: 'deployment', targetId: d.id, detail: { pipeline: pipeline.name, type } });
   res.status(201).json({ deployment: present(d) });
 });
 
@@ -87,6 +94,7 @@ deploymentsRouter.patch('/:id', async (req, res) => {
   const cronExpression = d.type === 'cron' && req.body?.cronExpression !== undefined ? validateCron(req.body.cronExpression) : d.cronExpression;
   const updated = await prisma.deployment.update({ where: { id: d.id }, data: { active, cronExpression } });
   if (d.type === 'cron') await (active ? scheduleCron(d.id, cronExpression!) : unscheduleCron(d.id));
+  await audit(req.userId, active ? 'deployment.resume' : 'deployment.pause', { teamId: d.teamId, targetType: 'deployment', targetId: d.id, detail: { type: d.type } });
   res.json({ deployment: present(updated) });
 });
 
@@ -94,6 +102,7 @@ deploymentsRouter.delete('/:id', async (req, res) => {
   const d = await ownDeployment(req.params.id, req.userId);
   if (d.type === 'cron') await unscheduleCron(d.id);
   await prisma.deployment.delete({ where: { id: d.id } });
+  await audit(req.userId, 'deployment.delete', { teamId: d.teamId, targetType: 'deployment', targetId: d.id, detail: { type: d.type } });
   res.status(204).end();
 });
 

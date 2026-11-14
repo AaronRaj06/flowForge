@@ -33,8 +33,13 @@ export type PipelineJSON = {
 
 type RunState = { runId: string | null; status: 'idle' | 'running' | 'SUCCESS' | 'ERROR' | 'CANCELLED' | 'WAITING'; error?: string; output?: unknown; waiting?: { nodeId: string; request: string } };
 
+export type Role = 'owner' | 'editor' | 'viewer';
+
 type State = {
   pipelineId: string | null;
+  /** Your access to the open pipeline; viewers get a read-only builder. */
+  role: Role;
+  teamId: string | null;
   name: string;
   nodes: PipelineNode[];
   edges: Edge[];
@@ -51,7 +56,8 @@ type State = {
   select: (id: string | null) => void;
   setName: (name: string) => void;
   getPipelineJSON: () => PipelineJSON;
-  load: (p: { id: string | null; name: string; graph: Partial<PipelineJSON> }) => void;
+  load: (p: { id: string | null; name: string; graph: Partial<PipelineJSON>; role?: Role; teamId?: string | null }) => void;
+  setTeam: (teamId: string | null) => void;
   markSaved: (id: string) => void;
   setNodeStatus: (id: string, patch: Partial<Pick<NodeData, 'status' | 'output' | 'error' | 'tokens'>>) => void;
   startRun: (runId: string) => void;
@@ -72,6 +78,8 @@ const clearStatus = (nodes: PipelineNode[]) =>
 
 export const usePipeline = create<State>((set, get) => ({
   pipelineId: null,
+  role: 'owner',
+  teamId: null,
   name: 'Untitled pipeline',
   nodes: [],
   edges: [],
@@ -126,9 +134,11 @@ export const usePipeline = create<State>((set, get) => ({
     };
   },
 
-  load: ({ id, name, graph }) =>
+  load: ({ id, name, graph, role = 'owner', teamId = null }) =>
     set({
       pipelineId: id,
+      role,
+      teamId,
       name,
       nodes: (graph.nodes ?? []).map((n, i) => ({
         id: n.id,
@@ -142,6 +152,7 @@ export const usePipeline = create<State>((set, get) => ({
       run: { runId: null, status: 'idle' },
     }),
   markSaved: (id) => set({ pipelineId: id, dirty: false }),
+  setTeam: (teamId) => set({ teamId }),
 
   setNodeStatus: (id, patch) =>
     set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n)) })),

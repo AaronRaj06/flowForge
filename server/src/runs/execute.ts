@@ -3,6 +3,7 @@ import { prisma, redis, runChannel } from '../db.ts';
 import { runPipeline } from '../engine/runner.ts';
 import { ApprovalPending, NodeExecutionError } from '../engine/errors.ts';
 import { notifyApprover } from './approvals.ts';
+import { editablePipelines } from '../lib/access.ts';
 import type { Graph, RunEventPayload } from '../engine/types.ts';
 import { createRun } from './create.ts';
 
@@ -34,8 +35,9 @@ export async function triggerErrorPipeline(run: { id: string; userId: string; pi
   if (!run.pipelineId || (run.input as any)?.failedRun) return null;
   const failed = await prisma.pipeline.findUnique({ where: { id: run.pipelineId } });
   if (!failed?.errorPipelineId) return null;
-  const target = await prisma.pipeline.findFirst({ where: { id: failed.errorPipelineId, userId: run.userId } });
-  if (!target) return null; // deleted since it was chosen
+  // Deleted since it was chosen, or no longer visible to whoever ran the failed pipeline.
+  const target = await prisma.pipeline.findFirst({ where: { id: failed.errorPipelineId, ...editablePipelines(run.userId) } });
+  if (!target) return null;
   return createRun({
     userId: run.userId,
     graph: target.graph as unknown as Graph,

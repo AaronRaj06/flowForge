@@ -5,23 +5,28 @@ import { createRun, dailyBudget, tokensUsedToday, costPerMillion } from '../runs
 import { ownPipeline } from './pipelines.ts';
 import { runQueue } from '../queue.ts';
 import { decide } from '../runs/approvals.ts';
+import { accessPipeline, audit, visiblePipelines } from '../lib/access.ts';
 import { Prisma } from '@prisma/client';
 
 export const runsRouter = Router();
 
-async function ownRun(id: string, userId: string) {
-  const run = await prisma.run.findFirst({
-    where: { id, userId },
-    include: { events: true },
-  });
+/** Your own runs, plus runs of team pipelines you can see ('edit' to cancel or decide approvals). */
+async function ownRun(id: string, userId: string, need: 'view' | 'edit' = 'view') {
+  const run = await prisma.run.findUnique({ where: { id }, include: { events: true } }).catch(() => null);
   if (!run) throw new HttpError(404, 'Run not found');
+  if (run.userId === userId) return run;
+  if (!run.pipelineId) throw new HttpError(404, 'Run not found');
+  await accessPipeline(run.pipelineId, userId, need).catch((e) => {
+    throw e.status === 403 ? e : new HttpError(404, 'Run not found');
+  });
   return run;
 }
 
 // Run the canvas as-is (graph in body), optionally linked to a saved pipeline.
 runsRouter.post('/', async (req, res) => {
-  const pipelineId = req.body?.pipelineId ? (await ownPipeline(req.body.pipelineId, req.userId)).id : null;
-  const run = await createRun({ userId: req.userId, graph: parseGraph(req.body?.graph), input: req.body?.input, pipelineId });
+  const p = req.body?.pipelineId ? await ownPipeline(req.body.pipelineId, req.userId) : null;
+  const run = await createRun({ userId: req.userId, graph: parseGraph(req.body?.graph), input: req.body?.input, pipelineId: p?.id ?? null });
+  await audit(req.userId, 'run.start', { teamId: p?.teamId, targetType: 'run', targetId: run.id, detail: { pipeline: p?.name ?? 'unsaved canvas' } });
   res.status(202).json({ runId: run.id });
 });
 
@@ -30,12 +35,15 @@ runsRouter.post('/', async (req, res) => {
 runsRouter.post(['/:pipelineId', '/pipeline/:pipelineId'], async (req, res) => {
   const p = await ownPipeline(String(req.params.pipelineId), req.userId);
   const run = await createRun({ userId: req.userId, graph: parseGraph(p.graph), input: req.body?.input, pipelineId: p.id });
+  await audit(req.userId, 'run.start', { teamId: p.teamId, targetType: 'run', targetId: run.id, detail: { pipeline: p.name } });
   res.status(202).json({ runId: run.id });
 });
 
 runsRouter.get('/', async (req, res) => {
+  // For one pipeline: its whole history (team members see each other's runs). Otherwise: your runs.
+  const pipelineId = req.query.pipelineId ? (await accessPipeline(String(req.query.pipelineId), req.userId, 'view')).id : null;
   const runs = await prisma.run.findMany({
-    where: { userId: req.userId, ...(req.query.pipelineId ? { pipelineId: String(req.query.pipelineId) } : {}) },
+    where: pipelineId ? { pipelineId } : { userId: req.userId },
     orderBy: { startedAt: 'desc' },
     take: 50,
     select: { id: true, pipelineId: true, deploymentId: true, status: true, error: true, tokensUsed: true, startedAt: true, finishedAt: true, pipeline: { select: { name: true } } },
@@ -48,13 +56,16 @@ runsRouter.get('/:id', async (req, res) => {
 });
 
 runsRouter.post('/:id/approval', async (req, res) => {
-  const run = await ownRun(req.params.id, req.userId);
+  const run = await ownRun(req.params.id, req.userId, 'edit');
   if (typeof req.body?.approved !== 'boolean') throw new HttpError(400, 'approved must be true or false');
-  res.json(await decide(run.id, req.body.approved, req.body.comment));
+  const result = await decide(run.id, req.body.approved, req.body.comment);
+  const teamId = run.pipelineId ? (await prisma.pipeline.findUnique({ where: { id: run.pipelineId }, select: { teamId: true } }))?.teamId : null;
+  await audit(req.userId, req.body.approved ? 'approval.approve' : 'approval.reject', { teamId, targetType: 'run', targetId: run.id });
+  res.json(result);
 });
 
 runsRouter.post('/:id/cancel', async (req, res) => {
-  const run = await ownRun(req.params.id, req.userId);
+  const run = await ownRun(req.params.id, req.userId, 'edit');
   if (run.status === 'WAITING') {
     await prisma.run.update({ where: { id: run.id }, data: { status: 'CANCELLED', checkpoint: Prisma.DbNull, finishedAt: new Date() } });
     await redis.publish(runChannel(run.id), JSON.stringify({ type: 'done', status: 'CANCELLED' }));
@@ -120,5 +131,53 @@ usageRouter.get('/', async (req, res) => {
     budget: dailyBudget(),
     costPerMillion: costPerMillion(),
     days: rows.map((r) => ({ day: r.day, tokens: Number(r.tokens), runs: Number(r.runs) })),
+  });
+});
+
+/**
+ * Per-pipeline health over the last 14 days (pipelines you can see): runs, success rate,
+ * average duration, tokens and cost; plus the latest failures so problems are easy to spot.
+ */
+usageRouter.get('/pipelines', async (req, res) => {
+  const since = new Date(Date.now() - 14 * 86_400_000);
+  const visible = await prisma.pipeline.findMany({ where: visiblePipelines(req.userId), select: { id: true, name: true, team: { select: { name: true } } } });
+  const ids = visible.map((p) => p.id);
+  const rows = ids.length
+    ? await prisma.$queryRaw<{ pipelineId: string; runs: bigint; ok: bigint; failed: bigint; tokens: bigint; avgMs: number | null }[]>`
+        SELECT "pipelineId", COUNT(*) AS runs,
+          COUNT(*) FILTER (WHERE status = 'SUCCESS') AS ok,
+          COUNT(*) FILTER (WHERE status = 'ERROR') AS failed,
+          COALESCE(SUM("tokensUsed"), 0) AS tokens,
+          AVG(EXTRACT(EPOCH FROM ("finishedAt" - "startedAt")) * 1000) FILTER (WHERE "finishedAt" IS NOT NULL) AS "avgMs"
+        FROM "Run" WHERE "pipelineId" IN (${Prisma.join(ids)}) AND "startedAt" >= ${since}
+        GROUP BY 1`
+    : [];
+  const price = costPerMillion();
+  const byId = new Map(visible.map((p) => [p.id, p]));
+  const failures = await prisma.run.findMany({
+    where: { pipelineId: { in: ids }, status: 'ERROR', startedAt: { gte: since } },
+    orderBy: { startedAt: 'desc' },
+    take: 10,
+    select: { id: true, pipelineId: true, error: true, startedAt: true, deploymentId: true },
+  });
+  res.json({
+    costPerMillion: price,
+    pipelines: rows
+      .map((r) => {
+        const tokens = Number(r.tokens);
+        return {
+          pipelineId: r.pipelineId,
+          name: byId.get(r.pipelineId)?.name,
+          team: byId.get(r.pipelineId)?.team?.name ?? null,
+          runs: Number(r.runs),
+          successRate: Number(r.runs) ? Number(r.ok) / Number(r.runs) : 0,
+          failed: Number(r.failed),
+          avgMs: r.avgMs === null ? null : Math.round(r.avgMs),
+          tokens,
+          cost: price ? (tokens / 1_000_000) * price : null,
+        };
+      })
+      .sort((a, b) => b.tokens - a.tokens || b.runs - a.runs),
+    failures: failures.map((f) => ({ ...f, name: byId.get(f.pipelineId!)?.name })),
   });
 });

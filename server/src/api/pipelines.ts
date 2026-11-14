@@ -3,6 +3,7 @@ import { prisma } from '../db.ts';
 import cronParser from 'cron-parser';
 import { HttpError, parseGraph } from './http.ts';
 import { costPerMillion } from '../runs/create.ts';
+import { accessPipeline, audit, teamRole, visiblePipelines } from '../lib/access.ts';
 
 /** How many times a cron expression fires in the next 30 days (capped, for every-minute schedules). */
 export function runsPerMonth(expr: string, cap = 50_000) {
@@ -15,36 +16,52 @@ export function runsPerMonth(expr: string, cap = 50_000) {
 
 export const pipelinesRouter = Router();
 
-export async function ownPipeline(id: string, userId: string) {
-  const p = await prisma.pipeline.findFirst({ where: { id, userId } });
-  if (!p) throw new HttpError(404, 'Pipeline not found');
-  return p;
-}
+/** Kept for callers: a pipeline the user may change, run or deploy (team editors included). */
+export const ownPipeline = (id: string, userId: string, need: 'view' | 'edit' = 'edit') => accessPipeline(id, userId, need);
 
 pipelinesRouter.get('/', async (req, res) => {
-  const pipelines = await prisma.pipeline.findMany({
-    where: { userId: req.userId },
+  const rows = await prisma.pipeline.findMany({
+    where: visiblePipelines(req.userId),
     orderBy: { updatedAt: 'desc' },
-    select: { id: true, name: true, description: true, errorPipelineId: true, updatedAt: true, createdAt: true },
+    select: {
+      id: true, name: true, description: true, errorPipelineId: true, updatedAt: true, createdAt: true, userId: true,
+      team: { select: { id: true, name: true, members: { where: { userId: req.userId }, select: { role: true } } } },
+    },
   });
+  const pipelines = rows.map(({ team, userId, ...p }) => ({
+    ...p,
+    team: team && { id: team.id, name: team.name },
+    role: userId === req.userId ? 'owner' : team?.members[0]?.role ?? 'viewer',
+  }));
   res.json({ pipelines });
 });
 
 pipelinesRouter.post('/', async (req, res) => {
   const name = String(req.body?.name ?? '').trim() || 'Untitled pipeline';
+  const teamId = req.body?.teamId ? String(req.body.teamId) : null;
+  if (teamId) await teamRole(teamId, req.userId, 'editor');
   const pipeline = await prisma.pipeline.create({
-    data: { userId: req.userId, name, description: req.body?.description ?? null, graph: parseGraph(req.body?.graph) as object },
+    data: { userId: req.userId, teamId, name, description: req.body?.description ?? null, graph: parseGraph(req.body?.graph) as object },
   });
-  res.status(201).json({ pipeline });
+  await audit(req.userId, 'pipeline.create', { teamId, targetType: 'pipeline', targetId: pipeline.id, detail: { name } });
+  res.status(201).json({ pipeline: { ...pipeline, role: 'owner' } });
 });
 
 pipelinesRouter.get('/:id', async (req, res) => {
-  res.json({ pipeline: await ownPipeline(req.params.id, req.userId) });
+  res.json({ pipeline: await accessPipeline(req.params.id, req.userId, 'view') });
 });
 
 pipelinesRouter.put('/:id', async (req, res) => {
-  await ownPipeline(req.params.id, req.userId);
+  const current = await accessPipeline(req.params.id, req.userId, 'edit');
   const data: Record<string, unknown> = {};
+  if (req.body?.teamId !== undefined) {
+    // Moving between workspaces: you must be able to edit in the destination, and only the
+    // creator or a team owner may take a pipeline out of a team.
+    const to = req.body.teamId ? String(req.body.teamId) : null;
+    if (current.teamId && to !== current.teamId && current.userId !== req.userId) await teamRole(current.teamId, req.userId, 'owner');
+    if (to) await teamRole(to, req.userId, 'editor');
+    data.teamId = to;
+  }
   if (req.body?.name !== undefined) data.name = String(req.body.name).trim() || 'Untitled pipeline';
   if (req.body?.description !== undefined) data.description = req.body.description;
   if (req.body?.graph !== undefined) data.graph = parseGraph(req.body.graph);
@@ -62,13 +79,16 @@ pipelinesRouter.put('/:id', async (req, res) => {
       data.errorPipelineId = (await ownPipeline(String(target), req.userId)).id;
     }
   }
-  res.json({ pipeline: await prisma.pipeline.update({ where: { id: req.params.id }, data }) });
+  const pipeline = await prisma.pipeline.update({ where: { id: req.params.id }, data });
+  const changed = Object.keys(data).map((k) => (k === 'graph' ? 'blocks' : k));
+  await audit(req.userId, 'pipeline.update', { teamId: pipeline.teamId ?? current.teamId, targetType: 'pipeline', targetId: pipeline.id, detail: { name: pipeline.name, changed } });
+  res.json({ pipeline: { ...pipeline, role: current.role } });
 });
 
 // Cost from history: average tokens per run and per block over the last 20 successful runs,
 // projected over each active schedule.
 pipelinesRouter.get('/:id/cost', async (req, res) => {
-  const p = await ownPipeline(req.params.id, req.userId);
+  const p = await accessPipeline(req.params.id, req.userId, 'view');
   const runs = await prisma.run.findMany({
     where: { pipelineId: p.id, status: 'SUCCESS' },
     orderBy: { startedAt: 'desc' },
@@ -94,7 +114,8 @@ pipelinesRouter.get('/:id/cost', async (req, res) => {
 });
 
 pipelinesRouter.delete('/:id', async (req, res) => {
-  await ownPipeline(req.params.id, req.userId);
+  const p = await accessPipeline(req.params.id, req.userId, 'edit');
   await prisma.pipeline.delete({ where: { id: req.params.id } });
+  await audit(req.userId, 'pipeline.delete', { teamId: p.teamId, targetType: 'pipeline', targetId: p.id, detail: { name: p.name } });
   res.status(204).end();
 });

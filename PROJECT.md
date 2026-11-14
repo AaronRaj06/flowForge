@@ -122,9 +122,10 @@ Flowforge treats an AI workflow as a **directed acyclic graph (DAG)** of blocks:
 - **Implemented:** all five phases (engine, visual builder, block library and integrations, templates and knowledge base, deployment and scheduling).
 - **Running locally** with Docker Compose: all 5 containers up; web at http://localhost:5173, API at http://localhost:4000.
 - **LLM provider:** Google Gemini through its OpenAI-compatible endpoint (`gemini-flash-lite-latest` for chat, `gemini-embedding-001` for 1536-dimension embeddings). Chat, templates and knowledge-base search have been checked against it.
+- **Roadmap:** steps 1 to 6 are built, including Part D's teams, observability and deployment pipeline (see section 11).
 - **Tests:**
-  - Unit and feature tests: 14/14 pass (engine, sandbox, `cloneGraph` property test, templates, OAuth refresh and revocation, Sheets → LLM → Gmail with stubbed Google APIs, knowledge base).
-  - End-to-end smoke test: 10/10 features pass against the running stack.
+  - Unit and feature tests: 29/29 pass (engine, isolate sandbox, approvals, agents, `cloneGraph` property test, templates, OAuth refresh and revocation, key-based integrations with stubbed APIs, knowledge base, AI assist, LLM fallback).
+  - End-to-end smoke test: 13 phases pass against the running stack, on the mock provider and on real Gemini, and against the production stack behind nginx.
 
 ### Running it
 
@@ -138,17 +139,29 @@ Without any API keys, LLM blocks use the offline mock provider, so the whole app
 
 ```bash
 npm test                          # unit and feature tests
-npm run smoke                     # end-to-end against a running stack (expects the mock provider)
+npm run smoke                     # end-to-end against a running stack (mock or real provider)
 ```
+
+CI (`.github/workflows/ci.yml`) runs the type-checks, the tests, the smoke suite and the web build on every push and pull request, then publishes production images to GitHub Container Registry from `main`.
+
+### Deploying to production
+
+```bash
+cp deploy/.env.prod.example deploy/.env.prod     # fill in secrets, PUBLIC_URL and an LLM key
+docker compose -f docker-compose.prod.yml --env-file deploy/.env.prod up -d --build
+docker compose -f docker-compose.prod.yml --env-file deploy/.env.prod up -d --scale worker=4   # more run throughput
+```
+
+nginx serves the built app and proxies `/api`, `/webhooks`, `/forms` and `/approvals` to the API on the same origin. For managed Postgres (with pgvector) and Redis, set `DATABASE_URL` and `REDIS_URL` in the env file and drop those two services. Workers are stateless, so they scale horizontally; put TLS in front of nginx (a load balancer or Caddy).
 
 ## 10. Known Limitations
 
-- `node:vm` is not a hard isolation boundary. It is fine for a single tenant but not for untrusted code from many tenants.
-- The SSRF check resolves DNS once before fetching, so a DNS-rebinding attack could get past it.
-- Chunk sizes estimate tokens as 0.75 words each.
+- Expressions run in a separate V8 isolate (`isolated-vm`) with a memory cap and timeout; it is a strong boundary, but not a separate OS process or container.
+- Chunks are counted with the o200k tokenizer; embedding providers tokenize slightly differently.
 - The mock embeddings match words, not meaning, so search quality without a real provider is only good enough for demos.
-- Two smoke-test assertions expect the mock provider's echo output, so they fail when a real LLM is configured.
-- On Gemini's free tier, LLM blocks occasionally get 503 "high demand" errors.
+- On Gemini's free tier, LLM blocks occasionally get 503 "high demand" errors; set `LLM_FALLBACK_MODEL` to fail over.
+- Credentials are personal: a team pipeline uses the credentials of whoever runs it (or of the deployment's creator for triggers).
+- Form uploads accept text files only; approval requests don't expire on their own (cancel the run instead).
 
 ## 11. Future Plan
 
@@ -206,12 +219,36 @@ npm run smoke                     # end-to-end against a running stack (expects 
 | 5 | Five new integrations, two new triggers | Wider practical use |
 | 6 | Hardening, then teams and production | Ready for real multi-user use |
 
-**Progress (14 Nov 2026):** Steps 1 to 5 are built and tested. Step 4 added the Approval block (a run pauses, then resumes from the Run tab or from an emailed/Slack link) and the AI Agent block (tools: HTTP, knowledge base, other pipelines). Step 5 added a Credentials page plus Discord, Telegram, Notion, GitHub and Airtable blocks, and a public Form trigger that can take a file upload. From Step 6, these are done: the HTTP block pins the resolved IP when it connects, LLM calls retry on 429/5xx with an optional `LLM_FALLBACK_MODEL`, and the smoke tests pass on a real provider. Still to do: `isolated-vm` sandboxing, exact token counting for chunks, and Part D (teams, audit logs, cloud deployment).
+**Progress (14 Nov 2026):** all six steps are built and tested.
+
+- **Step 4:** Approval block (a run pauses and resumes from the Run tab or an emailed/Slack link) and AI Agent block (tools: HTTP, knowledge base, other pipelines).
+- **Step 5:** Credentials page; Discord, Telegram, Notion, GitHub and Airtable blocks; a public Form trigger with file upload.
+- **Step 6, hardening:** expressions run in `isolated-vm`; the HTTP block pins the resolved IP at connect time; LLM calls retry on 429/5xx with an optional `LLM_FALLBACK_MODEL`; chunks are exactly 500 tokens; smoke tests pass on a real provider.
+- **Step 6, Part D:** team workspaces with owner/editor/viewer roles, per-team daily token budgets and an audit log (Teams page); per-pipeline run metrics, cost and recent failures (Usage page), with alerts through error workflows; CI on GitHub Actions; a production stack (`docker-compose.prod.yml`, nginx, scalable workers) and images published to GitHub Container Registry.
+- **Not code:** the user study below still has to be run with participants.
+
+### User study protocol (SDG 8 and SDG 9 evaluation)
+
+- **Question:** how much faster, and with how much less help, can people build a working automation in Flowforge than in n8n or in hand-written code?
+- **Participants:** 12 to 18 people in two groups: non-developers (operations, marketing, students outside computing) and developers. Each person uses all three tools, in an order rotated across participants (a Latin square) to cancel out learning effects.
+- **Tasks (same three in every tool):**
+  1. Every morning, summarise new rows from a sheet with an LLM and post the summary to a chat channel.
+  2. When a form is submitted, draft a reply with an LLM, wait for a manager's approval, then send it.
+  3. Answer a question using an uploaded PDF (retrieval).
+- **Measures:**
+  - time to the first successful run
+  - whether the task was completed within 30 minutes
+  - number of errors and help requests
+  - SUS usability score and NASA-TLX workload after each tool
+  - for Flowforge: how often Build with AI and Fix with AI were used, and whether their output was kept
+- **Procedure:** a 5-minute introduction to each tool, then the tasks with think-aloud and screen recording, a questionnaire after each tool, and a short interview at the end. About 90 minutes per person.
+- **Analysis:** compare times and completion rates per tool and per group (Friedman test, then Wilcoxon tests with Holm correction), report effect sizes, and theme the interview notes.
+- **Ethics:** informed consent, anonymised recordings, and no personal data in the test accounts.
 
 ## 12. Repository Layout
 
 ```
-web/                 React frontend (Builder, Templates, Knowledge, Usage, Login pages)
+web/                 React frontend (Builder, Templates, Knowledge, Teams, Credentials, Usage, Login pages)
 server/src/api/      Express routes: auth, pipelines, runs, templates, kb, deployments, integrations
 server/src/engine/   DAG engine: topoSort, runPipeline, sandboxed expressions, block handlers
 server/src/integrations/  Gmail, Sheets, Slack clients and OAuth token management
@@ -222,4 +259,6 @@ server/prisma/       Database schema
 server/test/         Unit and feature tests
 server/scripts/      Database setup, Phase 1 test run, end-to-end smoke test
 docker-compose.yml   Full local stack
+docker-compose.prod.yml, deploy/   Production stack (nginx config, env example)
+.github/workflows/   CI and image publishing
 ```

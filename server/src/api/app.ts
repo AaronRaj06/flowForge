@@ -11,6 +11,7 @@ import { deploymentsRouter, publicRouter } from './deployments.ts';
 import { aiRouter } from './ai.ts';
 import { approvalsRouter } from './approvals.ts';
 import { credentialsRouter } from './credentials.ts';
+import { teamsRouter, auditRouter } from './teams.ts';
 
 export function createApp() {
   const app = express();
@@ -31,6 +32,8 @@ export function createApp() {
   app.use('/api/deployments', requireAuth(), deploymentsRouter);
   app.use('/api/ai', requireAuth(), aiRouter);
   app.use('/api/credentials', requireAuth(), credentialsRouter);
+  app.use('/api/teams', requireAuth(), teamsRouter);
+  app.use('/api/audit', requireAuth(), auditRouter);
   app.use(approvalsRouter); // /approvals/:runId/:token
   app.use(publicRouter); // /webhooks/:id and /api/:id/invoke
 
