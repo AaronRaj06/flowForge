@@ -66,6 +66,69 @@ export const STARTER_TEMPLATES: { name: string; description: string; category: s
       edges: [e('draft', 'review'), e('review', 'send', 'true')],
     },
   },
+  {
+    name: 'Turn bug reports into GitHub issues',
+    description: 'Takes a bug report in plain words, has an LLM write a clear title and reproduction steps, and opens a GitHub issue.',
+    category: 'Dev',
+    graph: {
+      nodes: [
+        n('title', 'llm', 80, 120, { prompt: 'Write a short, specific GitHub issue title (under 80 characters, no quotes) for this bug report:\n\n{{input}}' }),
+        n('details', 'llm', 80, 320, { prompt: 'Rewrite this bug report as a GitHub issue body with the sections Summary, Steps to reproduce, Expected and Actual. Use Markdown.\n\n{{input}}' }),
+        n('issue', 'github', 440, 220, { repo: '{{github_repo}}', title: '{{title.output}}', body: '{{details.output}}' }),
+      ],
+      edges: [e('title', 'issue'), e('details', 'issue')],
+    },
+  },
+  {
+    name: 'Save form submissions to Airtable',
+    description: 'Deploy as a form; every submission is tagged by an LLM and stored as a row in your Airtable table.',
+    category: 'Productivity',
+    graph: {
+      nodes: [
+        n('tag', 'llm', 80, 200, { prompt: 'Give one category for this message: Question, Feedback, Bug or Sales. Reply with the category only.\n\n{{input.Message}}' }),
+        n('row', 'airtable', 420, 200, { baseId: '{{airtable_base_id}}', table: '{{airtable_table}}', fields: '{"Name": "{{input.Name}}", "Message": "{{input.Message}}", "Notes": "{{tag.output}}"}' }),
+      ],
+      edges: [e('tag', 'row')],
+    },
+  },
+  {
+    name: 'Meeting notes to Notion',
+    description: 'Paste a raw transcript or notes; an LLM writes a summary with decisions and action items and files it as a Notion page.',
+    category: 'Productivity',
+    graph: {
+      nodes: [
+        n('title', 'llm', 80, 120, { prompt: 'Give this meeting a short title (under 8 words, no quotes):\n\n{{input}}' }),
+        n('notes', 'llm', 80, 320, { prompt: 'Summarise this meeting as: Summary (2-3 sentences), Decisions, Action items (owner: task). Plain text.\n\n{{input}}' }),
+        n('page', 'notion', 440, 220, { databaseId: '{{notion_database_id}}', titleProperty: 'Name', title: '{{title.output}}', content: '{{notes.output}}' }),
+      ],
+      edges: [e('title', 'page'), e('notes', 'page')],
+    },
+  },
+  {
+    name: 'Website down alert to Telegram',
+    description: 'Run it on a schedule: checks a URL and messages you on Telegram only when the site fails to answer.',
+    category: 'Dev',
+    graph: {
+      nodes: [
+        n('check', 'http', 80, 200, { method: 'GET', url: '{{website_url}}', continueOnFail: true }),
+        n('isDown', 'conditional', 400, 200, { expression: 'Boolean(input.check.error)' }),
+        n('alert', 'telegram', 720, 200, { chatId: '{{telegram_chat_id}}', text: 'Website check failed for {{website_url}}: {{check.error}}' }),
+      ],
+      edges: [e('check', 'isDown'), e('isDown', 'alert', 'true')],
+    },
+  },
+  {
+    name: 'Announce releases on Discord',
+    description: 'Paste release notes or a changelog; an LLM turns them into a friendly announcement and posts it to your Discord server.',
+    category: 'Marketing',
+    graph: {
+      nodes: [
+        n('announce', 'llm', 80, 200, { prompt: 'Turn these release notes into a short, friendly Discord announcement (under 1,500 characters) with a few bullet points:\n\n{{input}}' }),
+        n('post', 'discord', 420, 200, { content: '{{announce.output}}' }),
+      ],
+      edges: [e('announce', 'post')],
+    },
+  },
 ];
 
 /** Creates or refreshes the official templates; safe to run on every start. */

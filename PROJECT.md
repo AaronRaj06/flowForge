@@ -122,7 +122,7 @@ Flowforge treats an AI workflow as a **directed acyclic graph (DAG)** of blocks:
 - `/api/health` checks Postgres and Redis and returns 503 if either is down, so the orchestrator stops routing to a broken instance.
 - API and worker shut down cleanly on `SIGTERM` (in-flight requests and jobs finish first).
 - The worker deletes finished runs older than `RUN_RETENTION_DAYS` (90 by default).
-- Five official starter templates are seeded on every start (Slack summary, support triage, document Q&A, API digest by email, approve-then-send).
+- Ten official starter templates are seeded on every start: Slack summary, support triage, document Q&A, API digest by email, approve-then-send, bug report to GitHub issue, form submissions to Airtable, meeting notes to Notion, website-down alert to Telegram, and release announcements on Discord. The last five were run against real accounts on 14 Nov 2026.
 
 ## 9. Current Status
 

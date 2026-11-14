@@ -35,4 +35,6 @@ test('starter templates are valid graphs with fill-in variables where needed', (
   const vars = (name: string) => extractVariables(STARTER_TEMPLATES.find((t) => t.name === name)!.graph).map((v) => v.key);
   assert.deepEqual(vars('Summarise and post to Slack'), ['slack_channel']);
   assert.deepEqual(vars('Answer questions from your documents'), []);
+  assert.deepEqual(vars('Turn bug reports into GitHub issues'), ['github_repo']);
+  assert.equal(STARTER_TEMPLATES.length, 10);
 });
