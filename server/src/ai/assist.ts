@@ -58,7 +58,7 @@ export function layout(graph: Graph): Graph {
 
 async function ask(userId: string, req: CompletionRequest, completeFn: CompleteFn, what: string) {
   if (completeFn === complete && pickProvider() === 'mock') {
-    throw new HttpError(400, `${what} needs a real LLM. Set ANTHROPIC_API_KEY or OPENAI_API_KEY in server/.env.`);
+    throw new HttpError(400, `${what} needs a real LLM. Set GEMINI_API_KEY (or ANTHROPIC_API_KEY / OPENAI_API_KEY) in server/.env.`);
   }
   const used = await tokensUsedToday(userId);
   if (used >= dailyBudget()) throw new HttpError(429, `Daily token budget used up (${used.toLocaleString()} / ${dailyBudget().toLocaleString()}).`);

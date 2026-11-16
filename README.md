@@ -31,6 +31,7 @@ With no keys set, LLM blocks use a built-in **mock provider** (it echoes the pro
 
 | Variable | Effect |
 | --- | --- |
+| `GEMINI_API_KEY` | LLM blocks call Google Gemini (`gemini-flash-lite-latest` by default; the default provider for new blocks) and KB embeddings use `gemini-embedding-001` (1536-d) |
 | `ANTHROPIC_API_KEY` | LLM blocks call Claude (`claude-opus-5-5` by default, with the server-side refusal fallback enabled) |
 | `OPENAI_API_KEY` | LLM blocks set to OpenAI work; KB embeddings use `text-embedding-3-small` (1536-d) |
 | `GOOGLE_CLIENT_ID` / `_SECRET` | Gmail and Sheets “Connect” buttons. Redirect URI: `{PUBLIC_URL}/api/integrations/{gmail\|sheets}/callback` |

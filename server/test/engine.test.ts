@@ -266,3 +266,20 @@ test('LLM: a temporary failure on the main model falls back to LLM_FALLBACK_MODE
     process.env = env;
   }
 });
+
+test('pickProvider uses the requested provider when it has a key, else the first with a key, else mock', async () => {
+  const { pickProvider } = await import('../src/llm/provider.ts');
+  const env = { ...process.env };
+  try {
+    Object.assign(process.env, { GEMINI_API_KEY: 'g', ANTHROPIC_API_KEY: '', OPENAI_API_KEY: 'o' });
+    assert.equal(pickProvider('gemini'), 'gemini');
+    assert.equal(pickProvider('openai'), 'openai');
+    assert.equal(pickProvider('anthropic'), 'gemini'); // old blocks saved as "anthropic" keep working
+    assert.equal(pickProvider(undefined), 'gemini');
+    assert.equal(pickProvider('mock'), 'mock');
+    Object.assign(process.env, { GEMINI_API_KEY: '', OPENAI_API_KEY: '' });
+    assert.equal(pickProvider('gemini'), 'mock');
+  } finally {
+    process.env = env;
+  }
+});

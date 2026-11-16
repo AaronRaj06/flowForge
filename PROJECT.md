@@ -33,7 +33,7 @@ Flowforge treats an AI workflow as a **directed acyclic graph (DAG)** of blocks:
 
 | Block | Purpose |
 | --- | --- |
-| **LLM** | Prompt Anthropic Claude or any OpenAI-compatible model (OpenAI, Google Gemini) |
+| **LLM** | Prompt Google Gemini (default), Anthropic Claude, or OpenAI and any OpenAI-compatible model |
 | **HTTP** | Call any REST API (protected against server-side request forgery) |
 | **Transform** | JavaScript expression over the run context, sandboxed with a 500 ms limit |
 | **Conditional** | True/false branching; the branch not taken is marked as skipped |
@@ -90,7 +90,7 @@ Flowforge treats an AI workflow as a **directed acyclic graph (DAG)** of blocks:
 | Backend API | Node.js 22, Express 5, TypeScript, JWT auth, bcrypt, Multer (uploads) |
 | Queue / worker | BullMQ on Redis 7, cron-parser |
 | Database | PostgreSQL 17 + pgvector, Prisma ORM |
-| AI providers | Anthropic SDK (Claude), OpenAI SDK (OpenAI or any OpenAI-compatible API, e.g. Gemini); offline mock provider |
+| AI providers | Google Gemini (default, through the OpenAI SDK), Anthropic SDK (Claude), OpenAI SDK (OpenAI or any OpenAI-compatible API); offline mock provider |
 | Integrations | Google OAuth (Gmail, Sheets), Slack OAuth |
 | DevOps | Docker Compose (postgres, redis, api, worker, web) |
 
@@ -128,10 +128,10 @@ Flowforge treats an AI workflow as a **directed acyclic graph (DAG)** of blocks:
 
 - **Implemented:** all five phases (engine, visual builder, block library and integrations, templates and knowledge base, deployment and scheduling).
 - **Running locally** with Docker Compose: all 5 containers up; web at http://localhost:5173, API at http://localhost:4000.
-- **LLM provider:** Google Gemini through its OpenAI-compatible endpoint (`gemini-flash-lite-latest` for chat, `gemini-embedding-001` for 1536-dimension embeddings). Chat, templates and knowledge-base search have been checked against it.
+- **LLM provider:** Google Gemini as a first-class provider, set with `GEMINI_API_KEY` (`gemini-flash-lite-latest` for chat, `gemini-embedding-001` for 1536-dimension embeddings). Chat, templates and knowledge-base search have been checked against it.
 - **Roadmap:** steps 1 to 6 are built, including Part D's teams, observability and deployment pipeline (see section 11).
 - **Tests:**
-  - Unit and feature tests: 32/32 pass (production config check, rate limiter, starter templates, engine, isolate sandbox, approvals, agents, `cloneGraph` property test, templates, OAuth refresh and revocation, key-based integrations with stubbed APIs, knowledge base, AI assist, LLM fallback).
+  - Unit and feature tests: 33/33 pass (provider selection, production config check, rate limiter, starter templates, engine, isolate sandbox, approvals, agents, `cloneGraph` property test, templates, OAuth refresh and revocation, key-based integrations with stubbed APIs, knowledge base, AI assist, LLM fallback).
   - End-to-end smoke test: 13 phases pass against the running stack, on the mock provider and on real Gemini, and against the production stack behind nginx.
   - Real accounts (14 Nov 2026): all eight app integrations delivered from saved pipelines: Gmail (email sent), Slack (posted to a channel), Google Sheets (rows written and read back), Discord, Telegram, GitHub (issue opened), Airtable (record added) and Notion (page created).
 
@@ -141,7 +141,7 @@ Flowforge treats an AI workflow as a **directed acyclic graph (DAG)** of blocks:
 docker compose up --build        # then open http://localhost:5173 and register
 ```
 
-Without any API keys, LLM blocks use the offline mock provider, so the whole app runs without internet. Set `ANTHROPIC_API_KEY`, or set `OPENAI_API_KEY` together with `OPENAI_BASE_URL`, `OPENAI_MODEL` and `OPENAI_EMBEDDING_MODEL` in `server/.env`, to use real models.
+Without any API keys, LLM blocks use the offline mock provider, so the whole app runs without internet. Set `GEMINI_API_KEY` (free at aistudio.google.com/apikey), `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in `server/.env` to use real models. A block whose provider has no key runs on the first provider that has one.
 
 ### Checks
 
@@ -160,7 +160,7 @@ docker compose -f docker-compose.prod.yml --env-file deploy/.env.prod up -d --bu
 docker compose -f docker-compose.prod.yml --env-file deploy/.env.prod up -d --scale worker=4   # more run throughput
 ```
 
-nginx serves the built app and proxies `/api`, `/webhooks`, `/forms` and `/approvals` to the API on the same origin. For managed Postgres (with pgvector) and Redis, set `DATABASE_URL` and `REDIS_URL` in the env file and drop those two services. Workers are stateless, so they scale horizontally; put TLS in front of nginx (a load balancer or Caddy).
+nginx serves the built app and proxies `/api`, `/webhooks`, `/forms` and `/approvals` to the API on the same origin. For managed Postgres (with pgvector) and Redis, set `DATABASE_URL` and `REDIS_URL` in the env file and drop those two services. Workers are stateless, so they scale horizontally; for HTTPS, set `DOMAIN` and `WEB_PORT=8080` in the env file and add `--profile tls`: a bundled Caddy container gets and renews a Let's Encrypt certificate (or put your own load balancer in front).
 
 ## 10. Known Limitations
 
@@ -169,6 +169,7 @@ nginx serves the built app and proxies `/api`, `/webhooks`, `/forms` and `/appro
 - The mock embeddings match words, not meaning, so search quality without a real provider is only good enough for demos.
 - On Gemini's free tier, LLM blocks occasionally get 503 "high demand" errors; set `LLM_FALLBACK_MODEL` to fail over.
 - Credentials are personal: a team pipeline uses the credentials of whoever runs it (or of the deployment's creator for triggers).
+- Passwords: signed-in users change theirs by clicking their email in the top bar; a forgotten password is reset by the operator with `npm run reset-password -w server -- <email> <new password>` (there is no email reset link).
 - Form uploads accept text files only; approval requests don't expire on their own (cancel the run instead).
 
 ## 11. Future Plan
@@ -261,7 +262,7 @@ server/src/api/      Express routes: auth, pipelines, runs, templates, kb, deplo
 server/src/engine/   DAG engine: topoSort, runPipeline, sandboxed expressions, block handlers
 server/src/integrations/  Gmail, Sheets, Slack clients and OAuth token management
 server/src/kb/       Chunking, ingestion and vector search
-server/src/llm/      Provider abstraction (Anthropic, OpenAI-compatible, mock)
+server/src/llm/      Provider abstraction (Gemini, Anthropic, OpenAI-compatible, mock)
 server/src/runs/     Run creation, execution and token budget
 server/prisma/       Database schema
 server/test/         Unit and feature tests

@@ -65,6 +65,16 @@ authRouter.post('/login', async (req, res) => {
   res.json({ token: signToken(user.id), user: { id: user.id, email } });
 });
 
+authRouter.post('/password', requireAuth(), async (req, res) => {
+  await rateLimit(`password:${req.userId}`, 10, 600, 'Too many attempts; wait 10 minutes and try again');
+  const password = String(req.body?.password ?? '');
+  if (password.length < 8) throw new HttpError(400, 'Password must be at least 8 characters');
+  const user = await prisma.user.findUnique({ where: { id: req.userId } });
+  if (!user || !(await bcrypt.compare(String(req.body?.current ?? ''), user.passwordHash))) throw new HttpError(403, 'Current password is wrong');
+  await prisma.user.update({ where: { id: user.id }, data: { passwordHash: await bcrypt.hash(password, 10) } });
+  res.json({ ok: true });
+});
+
 authRouter.get('/me', requireAuth(), async (req, res) => {
   const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { id: true, email: true } });
   if (!user) throw new HttpError(401, 'Account no longer exists');

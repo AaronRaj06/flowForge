@@ -32,6 +32,13 @@ const cut = (s: unknown, n = 40) => {
   return t.length > n ? t.slice(0, n) + '…' : t;
 };
 
+const PROVIDERS = [
+  { value: 'gemini', label: 'Google Gemini' },
+  { value: 'anthropic', label: 'Anthropic Claude' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'mock', label: 'Mock (no API call)' },
+];
+
 export const NODE_TYPES: NodeMeta[] = [
   {
     type: 'llm',
@@ -39,10 +46,10 @@ export const NODE_TYPES: NodeMeta[] = [
     icon: Bot,
     group: 'Core',
     prefix: 'llm',
-    defaultConfig: { provider: 'anthropic', model: 'claude-opus-5-5', systemPrompt: '', prompt: '' },
+    defaultConfig: { provider: 'gemini', model: '', systemPrompt: '', prompt: '' },
     fields: [
-      { key: 'provider', label: 'Provider', kind: 'select', options: [{ value: 'anthropic', label: 'Anthropic' }, { value: 'openai', label: 'OpenAI' }, { value: 'mock', label: 'Mock (no API call)' }] },
-      { key: 'model', label: 'Model', kind: 'text', placeholder: 'claude-opus-5-5' },
+      { key: 'provider', label: 'Provider', kind: 'select', options: PROVIDERS, hint: 'If this provider has no API key on the server, the first one that has a key is used.' },
+      { key: 'model', label: 'Model', kind: 'text', placeholder: 'Default for the provider', hint: 'Optional, e.g. gemini-flash-latest or claude-opus-5-5.' },
       { key: 'systemPrompt', label: 'System prompt', kind: 'textarea', placeholder: 'You are a concise assistant.' },
       { key: 'prompt', label: 'Prompt', kind: 'textarea', placeholder: 'Summarize: {{input}}' },
     ],
@@ -125,12 +132,12 @@ export const NODE_TYPES: NodeMeta[] = [
     icon: BrainCircuit,
     group: 'Core',
     prefix: 'agent',
-    defaultConfig: { provider: 'anthropic', model: 'claude-opus-5-5', prompt: '', tools: [] },
+    defaultConfig: { provider: 'gemini', model: '', prompt: '', tools: [] },
     fields: [
       { key: 'prompt', label: 'Task', kind: 'textarea', placeholder: 'Find the weather in {{input.city}} and say whether to bring an umbrella.' },
       { key: 'tools', label: 'Tools the agent may use', kind: 'tools', hint: 'The agent decides which tools to call, up to 8 steps. Output is { answer, steps }.' },
-      { key: 'provider', label: 'Provider', kind: 'select', options: [{ value: 'anthropic', label: 'Anthropic' }, { value: 'openai', label: 'OpenAI' }, { value: 'mock', label: 'Mock (no API call)' }] },
-      { key: 'model', label: 'Model', kind: 'text', placeholder: 'claude-opus-5-5' },
+      { key: 'provider', label: 'Provider', kind: 'select', options: PROVIDERS, hint: 'If this provider has no API key on the server, the first one that has a key is used.' },
+      { key: 'model', label: 'Model', kind: 'text', placeholder: 'Default for the provider', hint: 'Optional, e.g. gemini-flash-latest or claude-opus-5-5.' },
     ],
     summary: (c) => cut(c.prompt) || 'No task yet',
   },

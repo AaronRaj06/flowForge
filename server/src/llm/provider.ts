@@ -3,7 +3,7 @@ import OpenAI from 'openai';
 import { createHash } from 'node:crypto';
 
 export type CompletionRequest = {
-  provider?: 'anthropic' | 'openai' | 'mock';
+  provider?: Provider;
   model?: string;
   system?: string;
   prompt: string;
@@ -11,17 +11,30 @@ export type CompletionRequest = {
 };
 export type Completion = { text: string; inputTokens: number; outputTokens: number };
 
-export const DEFAULT_MODELS = { anthropic: 'claude-opus-5-5', openai: process.env.OPENAI_MODEL || 'gpt-4o-mini', mock: 'mock' } as const;
+export type Provider = 'gemini' | 'anthropic' | 'openai' | 'mock';
+export const DEFAULT_MODELS = {
+  gemini: process.env.GEMINI_MODEL || 'gemini-flash-lite-latest',
+  anthropic: 'claude-opus-5-5',
+  openai: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+  mock: 'mock',
+} as const;
+
+const KEY_ENV = { gemini: 'GEMINI_API_KEY', anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' } as const;
+const REAL = Object.keys(KEY_ENV) as (keyof typeof KEY_ENV)[];
 
 let anthropic: Anthropic | undefined;
 let openai: OpenAI | undefined;
+let gemini: OpenAI | undefined;
+// Gemini speaks the OpenAI wire format on this endpoint, so it reuses the OpenAI SDK.
+const geminiClient = () => (gemini ??= new OpenAI({ apiKey: process.env.GEMINI_API_KEY, baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/', maxRetries: maxRetries() }));
 
-/** With no API key configured, every call falls back to the mock provider. */
-export function pickProvider(requested?: string): 'anthropic' | 'openai' | 'mock' {
-  if (requested === 'openai' && process.env.OPENAI_API_KEY) return 'openai';
-  if (requested !== 'mock' && process.env.ANTHROPIC_API_KEY) return 'anthropic';
-  if (requested !== 'mock' && process.env.OPENAI_API_KEY) return 'openai';
-  return 'mock';
+/** The requested provider if its key is set, else the first provider that has a key, else the mock. */
+export function pickProvider(requested?: string): Provider {
+  if (requested === 'mock') return 'mock';
+  const has = (p: keyof typeof KEY_ENV) => Boolean(process.env[KEY_ENV[p]]);
+  const wanted = REAL.find((p) => p === requested);
+  if (wanted && has(wanted)) return wanted;
+  return REAL.find(has) ?? 'mock';
 }
 
 // The SDKs retry 429s, 5xx and dropped connections with exponential backoff (honouring Retry-After).
@@ -48,7 +61,7 @@ export async function complete(req: CompletionRequest): Promise<Completion> {
   }
 }
 
-async function callModel(provider: 'anthropic' | 'openai' | 'mock', req: CompletionRequest, model: string | undefined): Promise<Completion> {
+async function callModel(provider: Provider, req: CompletionRequest, model: string | undefined): Promise<Completion> {
   if (provider === 'anthropic') {
     anthropic ??= new Anthropic({ maxRetries: maxRetries() });
     const res = await anthropic.beta.messages.create(
@@ -68,9 +81,9 @@ async function callModel(provider: 'anthropic' | 'openai' | 'mock', req: Complet
     return { text, inputTokens: res.usage.input_tokens, outputTokens: res.usage.output_tokens };
   }
 
-  if (provider === 'openai') {
-    openai ??= new OpenAI({ maxRetries: maxRetries() });
-    const res = await openai.chat.completions.create(
+  if (provider === 'openai' || provider === 'gemini') {
+    const client = provider === 'gemini' ? geminiClient() : (openai ??= new OpenAI({ maxRetries: maxRetries() }));
+    const res = await client.chat.completions.create(
       {
         model: model!,
         messages: [
@@ -95,10 +108,12 @@ async function callModel(provider: 'anthropic' | 'openai' | 'mock', req: Complet
 export const EMBEDDING_DIM = 1536;
 
 export async function embed(texts: string[]): Promise<number[][]> {
-  if (process.env.OPENAI_API_KEY) {
-    openai ??= new OpenAI({ maxRetries: maxRetries() });
-    const res = await openai.embeddings.create({
-      model: process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small',
+  // Anthropic has no embeddings API, so embeddings come from Gemini or OpenAI whichever chat provider is used.
+  const useGemini = Boolean(process.env.GEMINI_API_KEY);
+  if (useGemini || process.env.OPENAI_API_KEY) {
+    const client = useGemini ? geminiClient() : (openai ??= new OpenAI({ maxRetries: maxRetries() }));
+    const res = await client.embeddings.create({
+      model: useGemini ? process.env.GEMINI_EMBEDDING_MODEL || 'gemini-embedding-001' : process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small',
       input: texts,
       dimensions: EMBEDDING_DIM, // must match the vector(1536) column, whatever the provider's native size
     });
@@ -110,7 +125,7 @@ export async function embed(texts: string[]): Promise<number[][]> {
 /**
  * Bag-of-words hashing embedding: texts that share words land close together,
  * which is enough to demo retrieval without an API key.
- * shortcut: not semantic; set OPENAI_API_KEY for real embeddings.
+ * shortcut: not semantic; set GEMINI_API_KEY or OPENAI_API_KEY for real embeddings.
  */
 function mockEmbedding(text: string): number[] {
   const v = new Array(EMBEDDING_DIM).fill(0);

@@ -8,6 +8,7 @@
     "test": "tsx --env-file=.env --test test/*.test.ts",
     "test-run": "tsx --env-file=.env scripts/test-run.ts",
     "smoke": "tsx scripts/smoke.ts",
+    "reset-password": "tsx --env-file-if-exists=.env scripts/reset-password.ts",
     "db:setup": "tsx --env-file-if-exists=.env scripts/setup-db.ts pre && prisma db push && tsx --env-file-if-exists=.env scripts/setup-db.ts post"
   },
   "dependencies": {
